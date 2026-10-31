@@ -1,0 +1,18 @@
+# 빌드 산출물 (Debug/ 의 makefile, *.mk, objects.list 는 터미널 빌드용으로 커밋)
+*.o
+*.d
+*.su
+*.cyclo
+*.elf
+*.map
+*.bin
+*.hex
+**/Debug/*.list
+**/Release/*.list
+!**/Debug/objects.list
+!**/Release/objects.list
+# NonSecure 링크에 필요한 CMSE import library 는 유지
+!**/Secure_nsclib/*.o
+.build-logs/
+.build-shim/
+*.bak
