@@ -224,11 +224,16 @@ int verify_inst(uint32_t addr)
  * 서로 다른 영역이면(= 연속된 한 영역이 아니면) 거부해야 하기 때문에, 권한 비트만 보는 것으로는
  * 부족하고 기존 S-MPU 체크와 같은 "영역 번호 동일성" 검사가 반드시 필요하다.
  *
- * 주의: 아래쪽 TTT 경로의 "UBFX r0, r3, #21, #1"(bit21=nonsecure_readwrite_ok)은 기존 코드를
- * 그대로 둔 것이다. 위 표에 따르면 그 필드는 SAU 레벨 개념이라 TTT 의 S-MPU 쓰기 가능 여부와
- * 직접 대응하지 않을 수 있다(즉 이 줄이 의도한 것과 다른 값을 반환해 기존 경로가 항상
- * 거부/항상 통과 중 하나로 치우쳐 동작할 가능성이 있음). 이번 변경 범위는 "NS-MPU 검증 단계
- * 추가"로 한정하기로 했으므로 이 줄은 고치지 않았다. docs/gap-analysis.md 참고.
+ * 참고: 아래쪽 TTT 경로의 "UBFX r0, r3, #21, #1"(bit21=nonsecure_readwrite_ok)은 기존 코드를
+ * 그대로 둔 것이고, 사용자가 이미 보드에서 정상 동작을 확인한 바 있다. [추정] dst_buf 는 항상
+ * SAU 상 NS 주소이므로, TTA/TTAT 의 "Alternate domain"이 하는 일(SAU 상 Secure 로 보이는 주소를
+ * 강제로 NS 취급해 조회)이 애초에 필요 없는 경우다 — 이미 SAU 가 NS 로 판정한 주소라면 A 플래그
+ * 없이도 TT/TTT 가 그 판정을 반영해 bit21 에 NS-MPU 기준 권한(TTT 이므로 비특권)을 채울 가능성이
+ * 있다. 맞다면 이 줄과 위에서 새로 추가한 TTAT/bit19 체크는 같은 권한을 서로 다른 경로로 중복
+ * 확인하는 셈이 되고, 새로 추가한 부분의 실질적 기여는 permission 비트가 아니라 "영역 번호
+ * 동일성(EORS/LSLS#24/BNE)" 검사 쪽이다 — 기존 TTT 경로에는 NS-MPU 쪽 영역 비교가 없었다.
+ * 이 가설은 Armv8-M 명령 수준 pseudocode 로 재확인한 것은 아니므로 [추정]으로 남긴다.
+ * docs/gap-analysis.md, docs/impl-notes-2026-10-31.md 참고.
  */
 __attribute__((naked, noinline))
 int verify_inst(uint32_t addr, uint32_t len)

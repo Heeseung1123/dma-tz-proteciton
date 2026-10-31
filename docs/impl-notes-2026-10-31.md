@@ -36,27 +36,28 @@ push/pop 해야 해서 명령 수가 늘어남 — "최대한 적은 instruction
 `arm-none-eabi-objdump -d`로 디스어셈블해 `ttat`/`eors`/`ubfx #19`/`cbz`가 의도대로 나오는지, 분기
 거리가 올바른지 직접 확인했다.
 
-### 기존 TTT/bit21 줄은 여전히 의심스럽다 (고치지 않음, 범위 밖)
-위와 같은 필드 구분(공통 필드 vs SAU 레벨 필드)에 따르면, 기존 코드 마지막 줄
-`UBFX r0, r3, #21, #1`(`TTT` 결과의 bit21 = `nonsecure_readwrite_ok`)은 S-MPU 쓰기 가능 여부와
-직접 대응하지 않는 SAU 레벨 필드를 읽는 것일 수 있다 — 즉 **이 줄이 의도한 것과 다른 값을
-반환해 기존 경로가 상시 거부 또는 상시 통과 중 하나로 치우쳐 동작할 가능성**이 여전히 남아있다
-(1차 리뷰 전에는 "상시 거부"로 단정했으나, 필드 의미를 다시 보니 그렇게 단정할 근거는 약하고
-"의도와 다른 값"이라고만 말할 수 있다). 이번 변경 범위는 "NS-MPU 검증 단계 추가"로 한정하기로
-했으므로 이 줄은 여전히 고치지 않았다. 보드에서 직접 확인하는 방법은 아래 그대로다.
+### 기존 TTT/bit21 줄에 대한 의심은 철회함 (사용자가 보드에서 정상 동작 확인)
+1차 리뷰 때는 "이 줄이 항상 0을 반환해 상시 거부로 동작할 수 있다"고 적었는데, 사용자가 전에 이미
+보드에서 이 경로(TTT + bit21)가 정상적으로 동작하는 것을 확인했다고 알려왔다. 그 근거로 들었던
+ARM 문서 인용(§4.4.4, TTA/TTAT="Non-Secure MPU setting"을 본다는 서술)은 "TT/TTT 는 bit21을 전혀
+채우지 않는다"는 뜻으로 단정할 근거가 아니었다 — 그 문서는 "TT/TTT가 bit21을 비운다"고 명시하지
+않았고, 거기서부터는 내 추론이었다.
 
-### 보드에서 확인하는 방법 (CLAUDE.md 규칙 6)
-1. `./build.sh clean && ./build.sh` — 빌드는 통과한다(이미 호스트에서 확인함, 보드 플래시 전 단계).
-2. GDB로 `project/NonSecure/Src/app_freertos.c` 의 `g_statMediatorTaskA`/`g_statRoundtripTaskA`
-   (및 TaskB 쌍)를 watch.
-   - **만약 `g_statMediatorTaskA.min == 0xFFFFFFFF`로 멈춰 있다면** → `DmaTask_RunBenchmark()`의
-     모든 반복에서 `SECURE_dma_m2m_start()`가 0이 아닌 값을 반환했다는 뜻 = `verify_inst()`가 상시
-     거부 중 = 위에서 말한 의심이 사실로 확인된 것.
-   - 정상이라면 32회 중 대부분 같은 값(논문 §4 "31/32회 동일"과 유사한 패턴)으로 채워진다.
-3. `SECURE_dma_m2m_start()`에 중단점을 걸고 `r0` 반환값을 직접 확인해도 된다
-   (`info registers r0` 또는 `p $r0` 직후).
-4. 만약 상시 거부로 확인되면, 다음 라운드에서 `docs/gap-analysis.md`에 기록을 추가하고 기존
-   `UBFX r0, r3, #21, #1` 줄을 어떻게 고칠지(삭제? `TTT`의 다른 필드로 교체?) 사용자 결정을 받아야 한다.
+**[추정, pseudocode 재확인 안 됨]** 더 그럴듯한 설명: `TTA`/`TTAT`의 "Alternate domain"은 SAU 상
+**Secure 로 보이는 주소**를 강제로 NS 취급해서 조회하기 위한 것이다. `dst_buf`는 애초에 SAU 상
+**NS** 주소이므로 그 강제 전환이 필요 없는 경우다 — SAU 가 이미 NS 로 판정했다면, `A` 플래그 없이도
+`TT`/`TTT` 가 그 판정을 그대로 반영해 bit21 에 NS-MPU 기준 권한(`TTT` 이므로 NS-비특권 권한)을
+채울 수 있다. 이 설명이 맞다면, 기존 `TTT`/bit21 체크와 이번에 추가한 `TTAT`/bit19 체크는 **같은
+권한을 두 개의 다른 공식 경로로 중복 확인**하는 셈이고, 이번 추가의 진짜 기여는 permission 비트가
+아니라 **NS-MPU 쪽 영역 번호 동일성 검사**(`EORS`+`LSLS #24`+`BNE`, 기존 TTT 경로에는 없었음)다.
+기존 줄은 **고치지 않았다** — 범위 밖이기도 하고, 이제는 틀렸다고 볼 근거도 약해졌다.
+
+### 보드에서 추가로 확인하면 좋을 것
+`g_statMediatorTaskA`/`g_statRoundtripTaskA`(및 TaskB 쌍)는 여전히 유용한 관찰 지점이다 — 이번에
+추가한 `TTAT` 경로가 기존 `TTT` 경로와 실제로 같은 값을 주는지(= 위 가설이 맞는지) 보드에서 양쪽
+결과 레지스터를 직접 비교해 보면 확인할 수 있다. `SECURE_dma_m2m_start()`→`verify_inst()`에
+중단점을 걸고, `TTAT r1,r0` 직후의 `r1`과 `TTT r3,r0` 직후의 `r3`(둘 다 bit21 자리만 비교)를
+비교하면 된다.
 
 ## 2. `project/.../NonSecure/Src/app_freertos.c` — 평가용 Application 전면 교체
 
@@ -165,6 +166,5 @@ NonSecure: text=35416 data=10288 bss=12112 (기존 대비 +832B text, +48B data,
 경고: 기존에 있던 것(`const` discard, RWX LOAD segment) 외 신규 경고/에러 없음.
 
 ## 아직 안 한 것 / 다음 라운드 후보
-- 위 1번 항목의 "상시 거부 의심"이 실제로 맞는지 보드에서 확인.
-- 맞다면 기존 `UBFX r0, r3, #21, #1` 줄을 어떻게 처리할지 결정(별도 보고 예정).
+- 위 1번 항목의 "TTT/bit21 과 TTAT/bit19 가 같은 값을 주는가" 가설을 보드에서 직접 비교 확인.
 - 공격 시나리오 코드 활성화(사용자가 원하는 시점에).
