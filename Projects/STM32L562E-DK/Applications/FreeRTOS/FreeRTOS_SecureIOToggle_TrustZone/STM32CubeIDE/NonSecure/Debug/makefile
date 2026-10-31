@@ -63,8 +63,8 @@ all: main-build
 main-build: FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf secondary-outputs
 
 # Tool invocations
-FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf FreeRTOS_SecureIOToggle_TrustZone_NonSecure.map: $(OBJS) $(USER_OBJS) /home/sysop/STM32CubeL5/Projects/STM32L562E-DK/Applications/FreeRTOS/FreeRTOS_SecureIOToggle_TrustZone/STM32CubeIDE/NonSecure/STM32L562QEIXQ_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m33 -T"/home/sysop/STM32CubeL5/Projects/STM32L562E-DK/Applications/FreeRTOS/FreeRTOS_SecureIOToggle_TrustZone/STM32CubeIDE/NonSecure/STM32L562QEIXQ_FLASH.ld" --specs=nosys.specs -Wl,-Map="FreeRTOS_SecureIOToggle_TrustZone_NonSecure.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv5-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf FreeRTOS_SecureIOToggle_TrustZone_NonSecure.map: $(OBJS) $(USER_OBJS) ../STM32L562QEIXQ_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m33 -T"../STM32L562QEIXQ_FLASH.ld" --specs=nosys.specs -Wl,-Map="FreeRTOS_SecureIOToggle_TrustZone_NonSecure.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv5-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 

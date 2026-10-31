@@ -169,32 +169,32 @@
 		<link>
 			<name>Middlewares/FreeRTOS/cmsis_os2.c</name>
 			<type>1</type>
-			<location>/home/sysop/STM32CubeL5/Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/cmsis_os2.c</location>
+			<location>PARENT-7-PROJECT_LOC/Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/cmsis_os2.c</location>
 		</link>
 		<link>
 			<name>Middlewares/FreeRTOS/croutine.c</name>
 			<type>1</type>
-			<location>/home/sysop/STM32CubeL5/Middlewares/Third_Party/FreeRTOS/Source/croutine.c</location>
+			<location>PARENT-7-PROJECT_LOC/Middlewares/Third_Party/FreeRTOS/Source/croutine.c</location>
 		</link>
 		<link>
 			<name>Middlewares/FreeRTOS/event_groups.c</name>
 			<type>1</type>
-			<location>/home/sysop/STM32CubeL5/Middlewares/Third_Party/FreeRTOS/Source/event_groups.c</location>
+			<location>PARENT-7-PROJECT_LOC/Middlewares/Third_Party/FreeRTOS/Source/event_groups.c</location>
 		</link>
 		<link>
 			<name>Middlewares/FreeRTOS/heap_4.c</name>
 			<type>1</type>
-			<location>/home/sysop/STM32CubeL5/Middlewares/Third_Party/FreeRTOS/Source/portable/MemMang/heap_4.c</location>
+			<location>PARENT-7-PROJECT_LOC/Middlewares/Third_Party/FreeRTOS/Source/portable/MemMang/heap_4.c</location>
 		</link>
 		<link>
 			<name>Middlewares/FreeRTOS/list.c</name>
 			<type>1</type>
-			<location>/home/sysop/STM32CubeL5/Middlewares/Third_Party/FreeRTOS/Source/list.c</location>
+			<location>PARENT-7-PROJECT_LOC/Middlewares/Third_Party/FreeRTOS/Source/list.c</location>
 		</link>
 		<link>
 			<name>Middlewares/FreeRTOS/mpu_wrappers_v2.c</name>
 			<type>1</type>
-			<locationURI>PARENT-8-PROJECT_LOC/FreeRTOS_kernel/portable/Common/mpu_wrappers_v2.c</locationURI>
+			<locationURI>PARENT-7-PROJECT_LOC/Middlewares/Third_Party/FreeRTOS/Source/portable/Common/mpu_wrappers_v2.c</locationURI>
 		</link>
 		<link>
 			<name>Middlewares/FreeRTOS/mpu_wrappers_v2_asm.c</name>
@@ -204,32 +204,32 @@
 		<link>
 			<name>Middlewares/FreeRTOS/port.c</name>
 			<type>1</type>
-			<location>/home/sysop/STM32CubeL5/Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM33/non_secure/port.c</location>
+			<location>PARENT-7-PROJECT_LOC/Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM33/non_secure/port.c</location>
 		</link>
 		<link>
 			<name>Middlewares/FreeRTOS/portasm.c</name>
 			<type>1</type>
-			<location>/home/sysop/STM32CubeL5/Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM33/non_secure/portasm.c</location>
+			<location>PARENT-7-PROJECT_LOC/Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM33/non_secure/portasm.c</location>
 		</link>
 		<link>
 			<name>Middlewares/FreeRTOS/queue.c</name>
 			<type>1</type>
-			<location>/home/sysop/STM32CubeL5/Middlewares/Third_Party/FreeRTOS/Source/queue.c</location>
+			<location>PARENT-7-PROJECT_LOC/Middlewares/Third_Party/FreeRTOS/Source/queue.c</location>
 		</link>
 		<link>
 			<name>Middlewares/FreeRTOS/stream_buffer.c</name>
 			<type>1</type>
-			<location>/home/sysop/STM32CubeL5/Middlewares/Third_Party/FreeRTOS/Source/stream_buffer.c</location>
+			<location>PARENT-7-PROJECT_LOC/Middlewares/Third_Party/FreeRTOS/Source/stream_buffer.c</location>
 		</link>
 		<link>
 			<name>Middlewares/FreeRTOS/tasks.c</name>
 			<type>1</type>
-			<location>/home/sysop/STM32CubeL5/Middlewares/Third_Party/FreeRTOS/Source/tasks.c</location>
+			<location>PARENT-7-PROJECT_LOC/Middlewares/Third_Party/FreeRTOS/Source/tasks.c</location>
 		</link>
 		<link>
 			<name>Middlewares/FreeRTOS/timers.c</name>
 			<type>1</type>
-			<location>/home/sysop/STM32CubeL5/Middlewares/Third_Party/FreeRTOS/Source/timers.c</location>
+			<location>PARENT-7-PROJECT_LOC/Middlewares/Third_Party/FreeRTOS/Source/timers.c</location>
 		</link>
 		<link>
 			<name>Drivers/BSP/STM32L562E-DK/stm32l562e_discovery.c</name>
