@@ -58,7 +58,7 @@ static void MX_ICACHE_Init(void);
 static void MX_GTZC_S_Init(void);
 static void Secure_DMA_LockAllChannels(void);
 static void Secure_TZIC_Init(void);
-static void SMPU_SetupProbeRegion(void);
+static void SMPU_SetupTaskRegions(void);
 
 
 /* USER CODE BEGIN PFP */
@@ -145,7 +145,7 @@ int main(void)
 
   /*************** Setup and jump to non-secure *******************************/
 
-  SMPU_SetupProbeRegion();
+  SMPU_SetupTaskRegions();
   NonSecure_Init();
 
   /* Non-secure software does not return, this code is not executed */
@@ -380,30 +380,79 @@ void Secure_TZIC_Init(void)
 }
 
 
-#define PROBE_BASE   0x20018500u
-#define PROBE_SIZE   0x100u                       /* 256B */
-#define PROBE_LIMIT  (PROBE_BASE + PROBE_SIZE - 1u)  /* 0x200185FF */
-#define PROBE_REGION 4u                            
+/*
+ * 태스크별 DMA Cluster S-MPU 태그 + 가드 블록 MPCBB 설정.
+ *
+ * docs/gap-analysis.md 결정에 따라 이번 라운드에서는 §3.1 의 Cluster/가드 자동 배치는
+ * 구현하지 않는다. 대신 기존 SMPU_SetupProbeRegion() 과 동일한 방식(수동 하드코딩)을
+ * NonSecure 쪽 두 DMA 태스크(DMA_Task_A/B, project/NonSecure/Src/app_freertos.c 의
+ * s_dmaClusterA/B)에 맞춰 그대로 반복한다.
+ *
+ * 주소는 NonSecure 쪽을 먼저 빌드한 뒤 아래 방법으로 직접 읽은 값이다(추후 버퍼
+ * 선언이나 레이아웃이 바뀌면 다시 읽어 갱신해야 한다 — 자동 동기화 없음, 지침대로
+ * 테이블/링커 섹션을 쓰지 않기로 했기 때문):
+ *   arm-none-eabi-nm Projects/.../NonSecure/Debug/FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf \
+ *       | grep -E " s_dmaCluster(A|B)"
+ * 결과(2026-10-31):
+ *   2001b900 b s_dmaClusterA   (body 0x2001b900-0x2001b9ff, guard 0x2001ba00-0x2001baff)
+ *   2001b700 b s_dmaClusterB   (body 0x2001b700-0x2001b7ff, guard 0x2001b800-0x2001b8ff)
+ *
+ * S-MPU 영역 4,5 는 각 태스크 Cluster 의 body(256B) 만 태그한다. guard 는 어떤
+ * S-MPU 영역에도 포함하지 않는다 — Secure_nsc.c 의 verify_inst() 가 TTT 로 base 와
+ * base+len-1 의 영역 번호를 비교할 때, len 이 body 를 넘어가면(공격 시나리오 (b))
+ * end 주소가 이 영역 밖(= 다른 영역 또는 invalid)이 되어 영역 번호가 달라지므로
+ * 거부되게 하기 위함이다.
+ */
+#define DMA_TASK_A_BODY_BASE   0x2001b900u
+#define DMA_TASK_A_BODY_SIZE   0x100u                                   /* 256B */
+#define DMA_TASK_A_BODY_LIMIT  (DMA_TASK_A_BODY_BASE + DMA_TASK_A_BODY_SIZE - 1u)
+#define DMA_TASK_A_GUARD_BASE  (DMA_TASK_A_BODY_BASE + DMA_TASK_A_BODY_SIZE)
+#define DMA_TASK_A_SMPU_REGION 4u
 
-static void SMPU_SetupProbeRegion(void)
+#define DMA_TASK_B_BODY_BASE   0x2001b700u
+#define DMA_TASK_B_BODY_SIZE   0x100u                                   /* 256B */
+#define DMA_TASK_B_BODY_LIMIT  (DMA_TASK_B_BODY_BASE + DMA_TASK_B_BODY_SIZE - 1u)
+#define DMA_TASK_B_GUARD_BASE  (DMA_TASK_B_BODY_BASE + DMA_TASK_B_BODY_SIZE)
+#define DMA_TASK_B_SMPU_REGION 5u
+
+static void SMPU_SetupOneTaskRegion(uint32_t region, uint32_t base, uint32_t limit)
 {
+    MPU->RNR  = region;
+    MPU->RBAR = (base & MPU_RBAR_BASE_Msk)
+              | (0u << MPU_RBAR_SH_Pos)    /* Non-shareable */
+              | (1u << MPU_RBAR_AP_Pos)    /* AP=01: RW, priv+unpriv */
+              | (1u << MPU_RBAR_XN_Pos);   /* XN */
+    MPU->RLAR = (limit & MPU_RLAR_LIMIT_Msk)
+              | (0u << MPU_RLAR_AttrIndx_Pos)
+              | MPU_RLAR_EN_Msk;
+}
+
+static void SMPU_SetupTaskRegions(void)
+{
+    uint32_t guardAttr = GTZC_MCPBB_BLOCK_SEC;
+
     __DMB();
     MPU->CTRL = 0;
 
     MPU->MAIR0 = 0xFFu;
 
-    MPU->RNR  = PROBE_REGION;
-    MPU->RBAR = (PROBE_BASE & MPU_RBAR_BASE_Msk)
-              | (0u << MPU_RBAR_SH_Pos)    /* Non-shareable */
-              | (1u << MPU_RBAR_AP_Pos)    /* AP=01: RW, priv+unpriv */
-              | (1u << MPU_RBAR_XN_Pos);   /* XN */
-    MPU->RLAR = (PROBE_LIMIT & MPU_RLAR_LIMIT_Msk)
-              | (0u << MPU_RLAR_AttrIndx_Pos)
-              | MPU_RLAR_EN_Msk;
+    SMPU_SetupOneTaskRegion(DMA_TASK_A_SMPU_REGION, DMA_TASK_A_BODY_BASE, DMA_TASK_A_BODY_LIMIT);
+    SMPU_SetupOneTaskRegion(DMA_TASK_B_SMPU_REGION, DMA_TASK_B_BODY_BASE, DMA_TASK_B_BODY_LIMIT);
 
     MPU->CTRL = MPU_CTRL_PRIVDEFENA_Msk | MPU_CTRL_ENABLE_Msk;
     __DSB();
     __ISB();
+
+    /* 가드 블록(각 256B, 1블록)을 MPCBB Secure 로 지정. MX_GTZC_S_Init() 이 NS 로
+     * 설정해 둔 구간 위에 이 두 블록만 Secure 로 덮어쓴다(§3.1, §3.3). */
+    if (HAL_GTZC_MPCBB_ConfigMemAttributes(DMA_TASK_A_GUARD_BASE, 1u, &guardAttr) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    if (HAL_GTZC_MPCBB_ConfigMemAttributes(DMA_TASK_B_GUARD_BASE, 1u, &guardAttr) != HAL_OK)
+    {
+        Error_Handler();
+    }
 }
 
 

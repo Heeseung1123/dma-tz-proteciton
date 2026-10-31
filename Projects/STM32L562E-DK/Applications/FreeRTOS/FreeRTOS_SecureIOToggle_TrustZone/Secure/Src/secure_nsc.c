@@ -197,19 +197,38 @@ int verify_inst(uint32_t addr)
 
 
 
+/*
+ * NS-MPU 검증(TTA) 추가 근거: ARM "Armv8-M Security Extension User Guide" (107655_100_01_en) 4.4.4절
+ *   "TTA (Test Target Alternate domain): Query ... the Non-Secure MPU setting to get access
+ *    permissions of a memory location for a Non-Secure access to that location."
+ * 즉 NS-MPU 조회는 TTA/TTAT 전용이고 TTT(아래쪽, S-MPU 조회용)는 NS-MPU를 보지 않는다.
+ * [아키텍처 도출: Armv8-M Security Extension User Guide 4.4.4, RM0438에는 TT 계열 명령 자체가 없어 근거 없음]
+ * CLAUDE.md 지침에 따라 호출자 특권/비특권 구분 없이 TTA 하나만 사용한다(TTAT 불필요).
+ *
+ * 주의: 아래쪽 TTT 경로의 "UBFX r0, r3, #21, #1"(bit21=nonsecure_readwrite_ok)은 기존 코드를
+ * 그대로 둔 것이다. 같은 근거 문서에 따르면 그 필드는 TTA/TTAT 전용이라 일반 TTT 결과에서는
+ * 채워지지 않을 가능성이 있다(즉 이 줄이 항상 0을 반환해 기존 경로가 상시 거부로 동작할 수 있음).
+ * 이번 변경 범위는 "NS-MPU 검증 단계 추가"로 한정하기로 했으므로 이 줄은 고치지 않았다.
+ * docs/gap-analysis.md 참고.
+ */
 __attribute__((naked, noinline))
 int verify_inst(uint32_t addr, uint32_t len)
 {
     __asm volatile (
         "SUBS   r2, r1, #1              \n"
-        "ADDS   r2, r2, r0              \n"
-        "TTT    r3, r0                  \n"
-        "TTT    r2, r2                  \n"
-        "BCS    1f                      \n"
-        "EORS   r1, r3, r2              \n"
+        "ADDS   r2, r2, r0              \n"   /* r2 = base+len-1; C = 주소 오버플로 */
+        "TTA    r1, r0                  \n"   /* r1 = NS-MPU(base)  [신규] */
+        "TTA    r3, r2                  \n"   /* r3 = NS-MPU(end)   [신규] */
+        "BCS    1f                      \n"   /* 오버플로면 거부 (ADDS의 C 플래그, TT 계열은 플래그 미변경) */
+        "ANDS   r1, r1, r3              \n"   /* [신규] 양 끝점 NS-MPU 결과 AND */
+        "UBFX   r1, r1, #21, #1         \n"   /* [신규] nonsecure_readwrite_ok, 둘 다 1이어야 통과 */
+        "CBZ    r1, 1f                  \n"   /* [신규] NS-MPU 쓰기 불가 -> 거부 */
+        "TTT    r3, r0                  \n"   /* r3 = S-MPU(base) (기존) */
+        "TTT    r2, r2                  \n"   /* r2 = S-MPU(end)  (기존) */
+        "EORS   r1, r3, r2              \n"   /* 기존: 두 S-MPU 영역 번호 비교 */
         "LSLS	r1, r1, #24             \n"
         "BNE    1f                      \n"
-        "UBFX   r0, r3, #21, #1         \n"
+        "UBFX   r0, r3, #21, #1         \n"   /* 기존 그대로 (위 주석 참고) */
         "BX     lr                      \n"
         "1:                             \n"
         "MOVS   r0, #0                  \n"
