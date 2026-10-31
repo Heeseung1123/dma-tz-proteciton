@@ -5,36 +5,45 @@ docs/gap-analysis.md 의 결정 사항(Q1~Q6, 하단 action 지시문)에 따라
 수동 하드코딩**하며, 중재자에는 **NS-MPU 검증 단계만** 추가한다. 되돌리려면 이 커밋만 revert하면 된다
 (`git log` 에서 이 커밋 해시 확인 후 `git revert <hash>`).
 
-## 1. `project/.../Secure/Src/secure_nsc.c` — `verify_inst()` 에 NS-MPU(TTA) 검증 추가
+## 1. `project/.../Secure/Src/secure_nsc.c` — `verify_inst()` 에 NS-MPU(TTAT) 검증 추가
 
-### 무엇을
+### 무엇을 (최종, 1차 리뷰에서 교정됨)
 기존 `verify_inst()`는 `TTT` 2회로 S-MPU(§3.2의 (2))만 확인했고, NS-MPU 쪽(§3.2의 (1))은 전혀 확인하지
-않았다(docs/gap-analysis.md A.2). `base`, `base+len-1` 두 끝점에 대해 `TTA`를 1회씩 추가해 NS-MPU 쓰기
-가능 여부(`nonsecure_readwrite_ok`, 결과 레지스터 bit21)를 확인하도록 했다. CLAUDE.md의 결정대로
-권한(특권/비특권) 구분 없이 `TTA` 하나만 쓴다(`TTAT` 불필요).
+않았다(docs/gap-analysis.md A.2). `base`, `base+len-1` 두 끝점에 대해 **`TTAT`**(비특권 alternate-domain)를
+1회씩 추가했다. 처음에는 `TTA`(특권)로 구현했다가, 사용자 리뷰에서 다음 두 가지를 교정받아 다시 썼다:
+
+1. **TTA 가 아니라 TTAT.** `DMA_Task_A`/`DMA_Task_B`는 `xTaskCreateRestricted`로 생성된 **비특권**
+   태스크다. `TTA`는 "NS **특권** 접근이라면" 기준으로 NS-MPU를 조회하고, `TTAT`는 "NS **비특권**
+   접근이라면" 기준으로 조회한다(ARM "Armv8-M Security Extension User Guide" 107655_100_01_en
+   §4.4.4). 실제 호출자가 항상 비특권이므로 TTAT 가 맞다. CLAUDE.md의 "권한 구분 없이 하나만
+   쓴다"는 "매번 분기하지 말고 비특권 변형으로 고정한다"는 뜻으로 적용했다.
+2. **권한 비트만 보고 영역 번호 비교를 생략하면 안 됨.** 처음 구현은 `TTA(base)`와 `TTA(end)`의
+   권한 비트를 AND로 묶어서만 확인했는데, 이러면 두 끝점이 각각 "따로" 쓰기 가능한 **서로 다른**
+   NS-MPU 영역에 속해도 통과해 버린다(그 사이 구간이 실제로 연속/동일 영역이라는 보장이 없음).
+   기존 S-MPU(`TTT`) 블록이 이미 `EORS`+`LSLS #24`+`BNE`로 영역 번호(결과 레지스터 bit[0:7])
+   동일성을 먼저 확인하는 것과 똑같은 구조를 NS-MPU 쪽에도 그대로 적용했다: TTAT 영역 번호
+   비교 → 같으면 그제서야 한쪽의 `readwrite_ok`(bit19) 확인.
+
+필드 선택(`bit19` vs `bit21`)도 함께 교정했다: 이 레포 툴체인의
+`arm_cmse.h`(`cmse_address_info_t`)를 직접 읽어 확인한 바, `mpu_region`(bit[0:7])/`readwrite_ok`
+(bit19)는 "이 TT 변형이 실제로 조회한 MPU"(TT/TTT→S-MPU, TTA/TTAT→NS-MPU) 기준의 **공통** 필드이고,
+`nonsecure_readwrite_ok`(bit21)/`secure`/`sau_*`/`idau_*`는 `__ARM_FEATURE_CMSE & 2` 로 게이트된
+**SAU/IDAU 레벨의 별개 개념**이다(어떤 TT 변형을 썼든 존재하는 필드일 뿐, "TTA/TTAT 전용 NS 권한"
+필드가 아니다). 그래서 새 NS-MPU 블록은 `TTAT` 결과의 **bit19**를 쓴다.
 
 레지스터 r0-r3 만 사용해 push/pop 없이 끝낸다(naked 함수라 r4 이상을 쓰면 AAPCS상 직접
-push/pop 해야 해서 명령 수가 늘어남 — "최대한 적은 instruction" 지침 때문에 피했다).
+push/pop 해야 해서 명령 수가 늘어남 — "최대한 적은 instruction" 지침 때문에 피했다). 최종 asm은
+`arm-none-eabi-objdump -d`로 디스어셈블해 `ttat`/`eors`/`ubfx #19`/`cbz`가 의도대로 나오는지, 분기
+거리가 올바른지 직접 확인했다.
 
-### 왜 (중요한 발견)
-구현 중 ARM 공식 문서("Armv8-M Security Extension User Guide", 107655_100_01_en, §4.4.4)를 확인한 결과:
-
-> **TTA (Test Target Alternate domain)**: Query ... **the Non-Secure MPU setting** to get access
-> permissions ... for a Non-Secure access to that location.
-> **TT / TTT**: Queries the Security state and access permissions of a memory location [for
-> unprivileged access].
-
-즉 **NS-MPU 를 들여다보는 것은 TTA/TTAT 뿐**이고, 일반 `TT`/`TTT`는 NS-MPU를 보지 않는다. 그런데
-기존 코드의 마지막 줄 `UBFX r0, r3, #21, #1`은 `TTT` 결과(`r3`)에서 bit21(`nonsecure_readwrite_ok`)을
-꺼내 최종 합격 여부로 쓰고 있었다 — 이 필드가 `TTA`/`TTAT` 전용이라면, 일반 `TTT` 결과에서는 항상
-0일 수 있다(즉 이 줄이 있는 한 **기존 코드는 상시 거부(`verify_inst`가 항상 0 반환)로 동작했을 가능성**).
-
-이 의문을 사용자에게 보고했고(AskUserQuestion), **"기존 줄은 그대로 두고 TTA를 별도로 추가"**하기로
-결정했다. 그래서:
-- 기존 `TTT`/bit21 줄은 **고치지 않고 그대로** 남겨 두었다.
-- 새로 추가한 `TTA` 기반 체크는 올바른 필드(TTA 결과의 bit21)를 쓰므로 그 자체로는 맞는 체크다.
-- 하지만 **두 체크가 AND로 묶여 있으므로, 기존 줄이 정말 상시 거부라면 결과적으로 전체 함수는
-  여전히 상시 거부**다. 이는 이번 변경 범위 밖이라 고치지 않았다.
+### 기존 TTT/bit21 줄은 여전히 의심스럽다 (고치지 않음, 범위 밖)
+위와 같은 필드 구분(공통 필드 vs SAU 레벨 필드)에 따르면, 기존 코드 마지막 줄
+`UBFX r0, r3, #21, #1`(`TTT` 결과의 bit21 = `nonsecure_readwrite_ok`)은 S-MPU 쓰기 가능 여부와
+직접 대응하지 않는 SAU 레벨 필드를 읽는 것일 수 있다 — 즉 **이 줄이 의도한 것과 다른 값을
+반환해 기존 경로가 상시 거부 또는 상시 통과 중 하나로 치우쳐 동작할 가능성**이 여전히 남아있다
+(1차 리뷰 전에는 "상시 거부"로 단정했으나, 필드 의미를 다시 보니 그렇게 단정할 근거는 약하고
+"의도와 다른 값"이라고만 말할 수 있다). 이번 변경 범위는 "NS-MPU 검증 단계 추가"로 한정하기로
+했으므로 이 줄은 여전히 고치지 않았다. 보드에서 직접 확인하는 방법은 아래 그대로다.
 
 ### 보드에서 확인하는 방법 (CLAUDE.md 규칙 6)
 1. `./build.sh clean && ./build.sh` — 빌드는 통과한다(이미 호스트에서 확인함, 보드 플래시 전 단계).

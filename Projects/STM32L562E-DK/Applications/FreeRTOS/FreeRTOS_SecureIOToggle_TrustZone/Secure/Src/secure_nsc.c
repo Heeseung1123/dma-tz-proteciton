@@ -198,18 +198,37 @@ int verify_inst(uint32_t addr)
 
 
 /*
- * NS-MPU 검증(TTA) 추가 근거: ARM "Armv8-M Security Extension User Guide" (107655_100_01_en) 4.4.4절
- *   "TTA (Test Target Alternate domain): Query ... the Non-Secure MPU setting to get access
- *    permissions of a memory location for a Non-Secure access to that location."
- * 즉 NS-MPU 조회는 TTA/TTAT 전용이고 TTT(아래쪽, S-MPU 조회용)는 NS-MPU를 보지 않는다.
- * [아키텍처 도출: Armv8-M Security Extension User Guide 4.4.4, RM0438에는 TT 계열 명령 자체가 없어 근거 없음]
- * CLAUDE.md 지침에 따라 호출자 특권/비특권 구분 없이 TTA 하나만 사용한다(TTAT 불필요).
+ * NS-MPU 검증(TTAT) 추가 근거: ARM "Armv8-M Security Extension User Guide" (107655_100_01_en) 4.4.4절
+ *   "TTA  (Test Target Alternate domain)           : ... Non-Secure MPU setting ... for a
+ *    Non-Secure access ..."
+ *   "TTAT (Test Target Alternate domain Unprivileged): ... Non-Secure MPU setting ... for a
+ *    Non-Secure UNPRIVILEGED access ..."
+ * TTA는 "NS 특권" 접근 기준으로, TTAT는 "NS 비특권" 접근 기준으로 NS-MPU를 조회한다.
+ * 호출자(DMA_Task_A/B 등, project/NonSecure/Src/app_freertos.c 의 xTaskCreateRestricted 로
+ * 생성된 태스크)는 항상 비특권으로 실행되므로, "권한 구분 없이 하나만 쓴다"는 지침은
+ * "매번 호출자 권한을 분기하지 말고 비특권 변형(TTAT)으로 고정한다"는 뜻으로 적용했다
+ * (TTA 는 특권 접근 기준이라 실제 호출자와 맞지 않아 제외).
+ *
+ * 필드 선택: GCC/LLVM 의 cmse_address_info_t 레이아웃(이 레포 툴체인
+ * .../lib/gcc/arm-none-eabi/14.3.1/include/arm_cmse.h 에서 직접 확인) 기준으로
+ *   bit[0:7]   mpu_region       - 이 TT 변형이 실제로 조회한 MPU(=S-MPU 또는 NS-MPU)의 영역 번호
+ *   bit[16]    mpu_region_valid
+ *   bit[18:19] read_ok/readwrite_ok   - 그 MPU 기준 권한 (TT/TTT 는 S-MPU, TTA/TTAT 는 NS-MPU)
+ *   bit[20:21] nonsecure_read_ok/nonsecure_readwrite_ok, bit[22] secure, bit[23:31] idau_*
+ *              - __ARM_FEATURE_CMSE&2 전용, SAU/IDAU 레벨의 별개 개념(어떤 TT 변형을 썼든
+ *                상수적으로 존재하는 필드이지 TTA/TTAT 전용 "NS 권한" 필드가 아니다)
+ * 즉 mpu_region/readwrite_ok(bit19) 쌍이 "이 변형이 조회한 MPU" 기준의 일반 필드이고,
+ * nonsecure_readwrite_ok(bit21)는 SAU 레벨의 별개 필드다. 아래 NS-MPU 블록은 TTAT 결과의
+ * bit[0:7](영역 번호)을 기존 S-MPU 블록과 동일한 방식(EORS+LSLS#24+BNE)으로 먼저 비교하고,
+ * 그 다음에야 bit19(readwrite_ok)를 확인한다 — 양 끝점이 각각 독립적으로 쓰기 가능하더라도
+ * 서로 다른 영역이면(= 연속된 한 영역이 아니면) 거부해야 하기 때문에, 권한 비트만 보는 것으로는
+ * 부족하고 기존 S-MPU 체크와 같은 "영역 번호 동일성" 검사가 반드시 필요하다.
  *
  * 주의: 아래쪽 TTT 경로의 "UBFX r0, r3, #21, #1"(bit21=nonsecure_readwrite_ok)은 기존 코드를
- * 그대로 둔 것이다. 같은 근거 문서에 따르면 그 필드는 TTA/TTAT 전용이라 일반 TTT 결과에서는
- * 채워지지 않을 가능성이 있다(즉 이 줄이 항상 0을 반환해 기존 경로가 상시 거부로 동작할 수 있음).
- * 이번 변경 범위는 "NS-MPU 검증 단계 추가"로 한정하기로 했으므로 이 줄은 고치지 않았다.
- * docs/gap-analysis.md 참고.
+ * 그대로 둔 것이다. 위 표에 따르면 그 필드는 SAU 레벨 개념이라 TTT 의 S-MPU 쓰기 가능 여부와
+ * 직접 대응하지 않을 수 있다(즉 이 줄이 의도한 것과 다른 값을 반환해 기존 경로가 항상
+ * 거부/항상 통과 중 하나로 치우쳐 동작할 가능성이 있음). 이번 변경 범위는 "NS-MPU 검증 단계
+ * 추가"로 한정하기로 했으므로 이 줄은 고치지 않았다. docs/gap-analysis.md 참고.
  */
 __attribute__((naked, noinline))
 int verify_inst(uint32_t addr, uint32_t len)
@@ -217,11 +236,13 @@ int verify_inst(uint32_t addr, uint32_t len)
     __asm volatile (
         "SUBS   r2, r1, #1              \n"
         "ADDS   r2, r2, r0              \n"   /* r2 = base+len-1; C = 주소 오버플로 */
-        "TTA    r1, r0                  \n"   /* r1 = NS-MPU(base)  [신규] */
-        "TTA    r3, r2                  \n"   /* r3 = NS-MPU(end)   [신규] */
-        "BCS    1f                      \n"   /* 오버플로면 거부 (ADDS의 C 플래그, TT 계열은 플래그 미변경) */
-        "ANDS   r1, r1, r3              \n"   /* [신규] 양 끝점 NS-MPU 결과 AND */
-        "UBFX   r1, r1, #21, #1         \n"   /* [신규] nonsecure_readwrite_ok, 둘 다 1이어야 통과 */
+        "BCS    1f                      \n"   /* 오버플로면 거부 (TT 계열은 플래그를 바꾸지 않으므로 먼저 검사해도 무방) */
+        "TTAT   r1, r0                  \n"   /* [신규] r1 = NS-MPU(base),  비특권 기준 */
+        "TTAT   r3, r2                  \n"   /* [신규] r3 = NS-MPU(end),   비특권 기준 (r2=end 보존됨) */
+        "EORS   r1, r1, r3              \n"   /* [신규] 두 NS-MPU 영역 번호 비교 (기존 S-MPU 블록과 동일한 방식) */
+        "LSLS   r1, r1, #24             \n"
+        "BNE    1f                      \n"
+        "UBFX   r1, r3, #19, #1         \n"   /* [신규] readwrite_ok (NS-MPU 쓰기 가능?) */
         "CBZ    r1, 1f                  \n"   /* [신규] NS-MPU 쓰기 불가 -> 거부 */
         "TTT    r3, r0                  \n"   /* r3 = S-MPU(base) (기존) */
         "TTT    r2, r2                  \n"   /* r2 = S-MPU(end)  (기존) */
