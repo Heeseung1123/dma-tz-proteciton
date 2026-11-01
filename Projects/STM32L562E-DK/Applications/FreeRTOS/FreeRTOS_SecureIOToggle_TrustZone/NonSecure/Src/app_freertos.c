@@ -469,12 +469,12 @@ void vCreateAppTasks( void )
   SECURE_dma_m2m_init((void *)App_DmaDoneCallback);
 
   TaskHandle_t hDmaTaskA = NULL, hDmaTaskB = NULL;
-  xTaskCreateRestricted( &xDmaTaskAParams, &hDmaTaskA );
-  xTaskCreateRestricted( &xDmaTaskBParams, &hDmaTaskB );
+//  xTaskCreateRestricted( &xDmaTaskAParams, &hDmaTaskA );
+//  xTaskCreateRestricted( &xDmaTaskBParams, &hDmaTaskB );
   /* configENABLE_ACCESS_CONTROL_LIST = 1: 권한을 주지 않으면 비특권 태스크의
    * xSemaphoreTake/Give 가 MPU wrapper 에서 즉시 pdFAIL 로 끝난다. */
-  vGrantAccessToSemaphore( hDmaTaskA, s_dmaChannelMutex );
-  vGrantAccessToSemaphore( hDmaTaskB, s_dmaChannelMutex );
+//  vGrantAccessToSemaphore( hDmaTaskA, s_dmaChannelMutex );
+//  vGrantAccessToSemaphore( hDmaTaskB, s_dmaChannelMutex );
   xTaskCreateRestricted( &xPlainTaskParams, NULL );
 }
 
