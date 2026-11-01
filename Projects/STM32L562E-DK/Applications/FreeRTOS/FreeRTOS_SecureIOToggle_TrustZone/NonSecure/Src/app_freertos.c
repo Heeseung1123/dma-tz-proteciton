@@ -83,13 +83,19 @@ void vApplicationStackOverflowHook(xTaskHandle xTask, signed char *pcTaskName)
  * 하나(dma_task_mem_t)로 선언해 멤버 순서 = 주소 증가 순서를 강제한다.
  * (별개 static 변수의 선언 순서는 GCC 가 역순으로 배치하므로[실측: nm] 쓰지 않는다.)
  *
- *   주소 증가(= DMA 주소 증가 방향) ↓
- *   +0x000 globals  32B : 태스크 전역 데이터. DMA 대상 아님      ┐ NS-MPU 사용자 영역 1개
- *   +0x020 cluster 224B : DMA Cluster = 이 태스크의 DMA 버퍼 모음 ┘ (256B)
- *                         -> Secure 가 이 구간만 S-MPU 영역(TTT 태그)으로 설정
- *   +0x100 guard   256B : MPCBB Secure 가드 블록. NS-MPU/S-MPU 어디에도 넣지 않고
- *                         NS 데이터를 두지 않는다. Cluster 바로 위(높은 주소)이므로
- *                         Cluster 를 넘는 DMA 쓰기/읽기는 가장 먼저 여기에 닿는다.
+ *   주소 증가(= DMA 주소 증가 방향) ↓   (s_dmaTaskMem[] 배열, 태스크당 768B)
+ *   +0x000 A.globals 256B : Task A 전역 데이터. DMA 대상 아님   ┐ Task A NS-MPU 사용자 영역 1개
+ *   +0x100 A.cluster 256B : Task A DMA Cluster                    ┘ (512B)
+ *                           -> Secure 가 이 구간만 S-MPU 영역(TTT 태그)으로 설정
+ *   +0x200 A.guard   256B : MPCBB Secure 가드 블록. NS-MPU/S-MPU 어디에도 넣지 않고
+ *                           NS 데이터를 두지 않는다. Cluster 바로 위(높은 주소)이므로
+ *                           Cluster 를 넘는 DMA 쓰기/읽기는 가장 먼저 여기에 닿는다.
+ *   +0x300 B.globals 256B : Task B 전역 데이터 = Task A 가드 블록 바로 위   ┐ Task B NS-MPU 영역
+ *   +0x400 B.cluster 256B : Task B DMA Cluster                               ┘
+ *   +0x500 B.guard   256B : Task B 가드 블록
+ *
+ * Cluster 가 256B 이고 guard 가 256B 경계여야 하므로 globals 도 256B 블록으로 둔다
+ * (globals 32B 면 Cluster 와 guard 사이에 틈이 생겨 경계 초과를 바로 탐지하지 못함).
  *
  * Cluster 는 가드를 포함하지 않는다. guard 멤버는 가드 블록의 메모리를 예약하기 위한
  * 자리일 뿐이다. globals 와 Cluster 가 같은 NS-MPU 영역에 있으므로 NS-MPU 만으로는
@@ -102,7 +108,7 @@ void vApplicationStackOverflowHook(xTaskHandle xTask, signed char *pcTaskName)
  * ------------------------------------------------------------------------- */
 
 /* 사이클 측정 결과 (태스크 전역 데이터의 예). GDB 에서 조회:
- *   p s_dmaTaskMemA.globals.v
+ *   p s_dmaTaskMem[DMA_TASK_A].globals.v
  *   medStat  : SECURE_dma_m2m_start() 호출~복귀 1회 비용(= 중재자 검증 + 레지스터 설정).
  *   rtStat   : 같은 호출 시작부터 Secure ISR(TZIC/DMA 완료 인터럽트)을 거쳐
  *              NS 콜백이 실행되는 시점까지의 왕복 비용.
@@ -117,9 +123,9 @@ typedef struct
     volatile cycle_stat_t statRoundtrip;
 } dma_task_globals_t;
 
-#define DMA_TASK_GLOBALS_SIZE   32u                              /* NS-MPU 32B 단위 */
-#define DMA_CLUSTER_SIZE        (256u - DMA_TASK_GLOBALS_SIZE)   /* 224B: guard 가 256B 경계에 오도록 */
-#define DMA_GUARD_SIZE          256u                             /* MPCBB 블록 1개 */
+#define DMA_TASK_GLOBALS_SIZE   256u   /* Cluster 를 256B 경계에 두기 위해 256B 블록 */
+#define DMA_CLUSTER_SIZE        256u
+#define DMA_GUARD_SIZE          256u   /* MPCBB 블록 1개 */
 
 typedef struct
 {
@@ -127,7 +133,7 @@ typedef struct
     {
         dma_task_globals_t v;
         uint8_t            raw[DMA_TASK_GLOBALS_SIZE];
-    } globals;                       /* 태스크 전역 데이터 (DMA 대상 아님) */
+    } globals;                       /* 태스크 전역 데이터 (DMA 대상 아님). 이전 태스크 guard 바로 위 */
     struct
     {
         uint8_t dst[DMA_CLUSTER_SIZE];   /* M2M DMA 목적지 */
@@ -138,12 +144,17 @@ typedef struct
 _Static_assert(sizeof(dma_task_globals_t) <= DMA_TASK_GLOBALS_SIZE, "globals overflow");
 _Static_assert(offsetof(dma_task_mem_t, cluster) % 32u == 0u, "cluster: S-MPU 32B 정렬");
 _Static_assert(offsetof(dma_task_mem_t, guard) % 256u == 0u, "guard: MPCBB 256B 블록 정렬");
+_Static_assert(sizeof(dma_task_mem_t) == offsetof(dma_task_mem_t, guard) + DMA_GUARD_SIZE,
+               "guard 뒤 패딩 없음 -> 다음 태스크 globals 가 guard 바로 위");
 
 /* NS-MPU 사용자 영역 하나 = globals + Cluster (guard 제외) */
 #define DMA_TASK_NSMPU_SIZE     offsetof(dma_task_mem_t, guard)
 
-static dma_task_mem_t s_dmaTaskMemA;
-static dma_task_mem_t s_dmaTaskMemB;
+/* 배열 하나로 선언해 [A.globals|A.cluster|A.guard|B.globals|B.cluster|B.guard] 순서를
+ * 보장한다([그림 2]: Task1 data -> Cluster1 -> Guard -> Task2 data -> ...).
+ * 별개 static 변수는 GCC 가 역순 배치하므로 쓰지 않는다. */
+enum { DMA_TASK_A = 0, DMA_TASK_B = 1, DMA_TASK_NUM };
+static dma_task_mem_t s_dmaTaskMem[DMA_TASK_NUM];
 
 static uint8_t s_dmaSrcA[32] __attribute__((aligned(4)));
 static uint8_t s_dmaSrcB[32] __attribute__((aligned(4)));
@@ -233,14 +244,14 @@ static void DmaTask_RunBenchmark(uint8_t *srcBuf, uint8_t *dstBuf,
  *
  * (a) 요청 인자 조작:
  *   (a-1) Task A 가 Task B 의 Cluster 를 가리키며 중재자를 호출. NS-MPU 상 Task A 는
- *         s_dmaTaskMemB 에 쓰기 권한이 없으므로 verify_inst() 의 TTAT 단계에서 거부.
+ *         s_dmaTaskMem[DMA_TASK_B] 에 쓰기 권한이 없으므로 verify_inst() 의 TTAT 단계에서 거부.
  *   (a-2) Task A 가 자기 태스크 전역 데이터(globals)를 가리키며 중재자를 호출.
  *         globals 는 Cluster 와 같은 NS-MPU 영역이라 TTAT 단계는 통과하지만, S-MPU
  *         태그가 Cluster 에만 있으므로 TTT 단계에서 거부 — 논문이 말하는 "같은 MPU
  *         영역 안의 보호 객체를 향한 DMA" 차단.
  *   두 경우 모두 SECURE_dma_m2m_start 가 0 이 아닌 값을 반환하고 전송은 시작되지 않는다.
  *
- * (b) 검증 통과 후 길이를 Cluster 너머로 변조: len 을 일부러 Cluster 크기(224B) 보다
+ * (b) 검증 통과 후 길이를 Cluster 너머로 변조: len 을 일부러 Cluster 크기(256B) 보다
  *     크게 주어 end 주소(base+len-1)가 guard 안으로 들어가게 한다. 1차 방어선인
  *     request-time 검증(TTT 로 양 끝점 S-MPU 영역 비교)이 base 와 end 의 영역 번호가
  *     달라진 것을 보고 거부해야 한다. 만약(설계상 있으면 안 되지만) 1차 방어선이
@@ -252,20 +263,20 @@ static void AttackScenario_ArgTamper_TaskA(void)
 {
     xSemaphoreTake(s_dmaChannelMutex, portMAX_DELAY);
     s_dmaDone = 0;
-    int r = SECURE_dma_m2m_start(s_dmaSrcA, s_dmaTaskMemB.cluster.dst, DMA_BENCH_XFER_LEN);
+    int r = SECURE_dma_m2m_start(s_dmaSrcA, s_dmaTaskMem[DMA_TASK_B].cluster.dst, DMA_BENCH_XFER_LEN);
     configASSERT(r != 0);  /* (a-1) 반드시 거부되어야 함 */
-    r = SECURE_dma_m2m_start(s_dmaSrcA, s_dmaTaskMemA.globals.raw, DMA_BENCH_XFER_LEN);
+    r = SECURE_dma_m2m_start(s_dmaSrcA, s_dmaTaskMem[DMA_TASK_A].globals.raw, DMA_BENCH_XFER_LEN);
     configASSERT(r != 0);  /* (a-2) 반드시 거부되어야 함 */
     xSemaphoreGive(s_dmaChannelMutex);
 }
 
 static void AttackScenario_OverflowAfterVerify_TaskA(void)
 {
-    const uint32_t oversizedLen = sizeof(s_dmaTaskMemA.cluster.dst) + 32u; /* Cluster 를 넘어 guard 까지 */
+    const uint32_t oversizedLen = sizeof(s_dmaTaskMem[DMA_TASK_A].cluster.dst) + 32u; /* Cluster 를 넘어 guard 까지 */
 
     xSemaphoreTake(s_dmaChannelMutex, portMAX_DELAY);
     s_dmaDone = 0;
-    int r = SECURE_dma_m2m_start(s_dmaSrcA, s_dmaTaskMemA.cluster.dst, oversizedLen);
+    int r = SECURE_dma_m2m_start(s_dmaSrcA, s_dmaTaskMem[DMA_TASK_A].cluster.dst, oversizedLen);
     if (r == 0)
     {
         while (!s_dmaDone) { }   /* 2차 방어선(가드 블록+TZIC)이 채널을 중단시킬 때까지 대기 */
@@ -287,15 +298,15 @@ static void vDmaTaskA( void *pvParameters )
 
   for (uint32_t i = 0; i < sizeof(s_dmaSrcA); i++) { s_dmaSrcA[i] = (uint8_t)i; }
 
-  DmaTask_RunBenchmark(s_dmaSrcA, s_dmaTaskMemA.cluster.dst,
-                       &s_dmaTaskMemA.globals.v.statMediator,
-                       &s_dmaTaskMemA.globals.v.statRoundtrip);
+  DmaTask_RunBenchmark(s_dmaSrcA, s_dmaTaskMem[DMA_TASK_A].cluster.dst,
+                       &s_dmaTaskMem[DMA_TASK_A].globals.v.statMediator,
+                       &s_dmaTaskMem[DMA_TASK_A].globals.v.statRoundtrip);
 
   for( ;; )
   {
     xSemaphoreTake(s_dmaChannelMutex, portMAX_DELAY);
     s_dmaDone = 0;
-    (void)SECURE_dma_m2m_start(s_dmaSrcA, s_dmaTaskMemA.cluster.dst, DMA_BENCH_XFER_LEN);
+    (void)SECURE_dma_m2m_start(s_dmaSrcA, s_dmaTaskMem[DMA_TASK_A].cluster.dst, DMA_BENCH_XFER_LEN);
     while (!s_dmaDone) { }
     xSemaphoreGive(s_dmaChannelMutex);
 
@@ -310,15 +321,15 @@ static void vDmaTaskB( void *pvParameters )
 
   for (uint32_t i = 0; i < sizeof(s_dmaSrcB); i++) { s_dmaSrcB[i] = (uint8_t)i; }
 
-  DmaTask_RunBenchmark(s_dmaSrcB, s_dmaTaskMemB.cluster.dst,
-                       &s_dmaTaskMemB.globals.v.statMediator,
-                       &s_dmaTaskMemB.globals.v.statRoundtrip);
+  DmaTask_RunBenchmark(s_dmaSrcB, s_dmaTaskMem[DMA_TASK_B].cluster.dst,
+                       &s_dmaTaskMem[DMA_TASK_B].globals.v.statMediator,
+                       &s_dmaTaskMem[DMA_TASK_B].globals.v.statRoundtrip);
 
   for( ;; )
   {
     xSemaphoreTake(s_dmaChannelMutex, portMAX_DELAY);
     s_dmaDone = 0;
-    (void)SECURE_dma_m2m_start(s_dmaSrcB, s_dmaTaskMemB.cluster.dst, DMA_BENCH_XFER_LEN);
+    (void)SECURE_dma_m2m_start(s_dmaSrcB, s_dmaTaskMem[DMA_TASK_B].cluster.dst, DMA_BENCH_XFER_LEN);
     while (!s_dmaDone) { }
     xSemaphoreGive(s_dmaChannelMutex);
 
@@ -356,10 +367,10 @@ static const TaskParameters_t xDmaTaskAParams =
   {
     /* Region 0: 태스크 전역 데이터 + DMA Cluster 를 영역 하나로 (guard 제외).
      *           S-MPU 태그는 Secure 쪽에서 이 중 Cluster 에만 건다. */
-    { &s_dmaTaskMemA, DMA_TASK_NSMPU_SIZE, portMPU_REGION_READ_WRITE },
+    { &s_dmaTaskMem[DMA_TASK_A], DMA_TASK_NSMPU_SIZE, portMPU_REGION_READ_WRITE },
     /* Region 1: 이 태스크 전용 DMA 소스 (테스트용, Cluster 밖, 검증 대상 아님) */
     { s_dmaSrcA, sizeof( s_dmaSrcA ), portMPU_REGION_READ_WRITE },
-    /* Region 2: 미사용. s_dmaTaskMemA.guard 는 어떤 NS-MPU 영역에도 포함하지 않는다. */
+    /* Region 2: 미사용. s_dmaTaskMem[DMA_TASK_A].guard 는 어떤 NS-MPU 영역에도 포함하지 않는다. */
     { 0, 0, 0 }
   }
 };
@@ -374,7 +385,7 @@ static const TaskParameters_t xDmaTaskBParams =
   .puxStackBuffer = xDmaTaskBStack,
   .xRegions =
   {
-    { &s_dmaTaskMemB, DMA_TASK_NSMPU_SIZE, portMPU_REGION_READ_WRITE },
+    { &s_dmaTaskMem[DMA_TASK_B], DMA_TASK_NSMPU_SIZE, portMPU_REGION_READ_WRITE },
     { s_dmaSrcB, sizeof( s_dmaSrcB ), portMPU_REGION_READ_WRITE },
     { 0, 0, 0 }
   }
