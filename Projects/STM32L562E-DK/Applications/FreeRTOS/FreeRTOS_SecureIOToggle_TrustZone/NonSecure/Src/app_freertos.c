@@ -121,6 +121,10 @@ typedef struct
 {
     volatile cycle_stat_t statMediator;
     volatile cycle_stat_t statRoundtrip;
+    /* DMA 채널 동기화용 (비특권 태스크가 읽어야 하므로 자기 NS-MPU 영역 안에 둔다) */
+    SemaphoreHandle_t     dmaMutex;    /* s_dmaChannelMutex 사본. vCreateAppTasks()(특권)가 채움 */
+    volatile uint8_t      dmaDone;     /* App_DmaDoneCallback()(특권)이 1로 설정 */
+    volatile uint8_t      dmaStatus;   /* 마지막 전송 결과: 0 = TC, 1 = TEIF */
 } dma_task_globals_t;
 
 #define DMA_TASK_GLOBALS_SIZE   256u   /* Cluster 를 256B 경계에 두기 위해 256B 블록 */
@@ -161,24 +165,34 @@ static uint8_t s_dmaSrcB[32] __attribute__((aligned(4)));
 
 /* 하나뿐인 Secure DMA 채널(DMA1_Channel1, M2M)과 콜백 슬롯을 두 태스크가 번갈아
  * 쓰도록 직렬화한다. NS-MPU/S-MPU 보호 자체와는 무관한, 이 PoC 응용 코드 수준의
- * 동시성 처리일 뿐이다. */
+ * 동시성 처리일 뿐이다.
+ *
+ * 비특권 태스크는 사용자 영역 밖 SRAM 을 읽을 수 없으므로(PRIVDEFENA 배경 영역 =
+ * 특권 전용), 이 핸들 자체는 특권 코드(vCreateAppTasks, 콜백)만 쓰고 태스크는 자기
+ * globals 의 사본(dmaMutex)과 완료 플래그(dmaDone)만 쓴다. 추가 NSC 호출은 없다. */
 static SemaphoreHandle_t s_dmaChannelMutex;
-static volatile uint8_t  s_dmaDone;
-static volatile uint32_t s_dmaCbStatus;
 
+/* Secure DMA ISR 이 BLXNS 로 부르는 NS 콜백. NS Handler 모드 = 특권이므로 모든
+ * 태스크의 globals 에 쓸 수 있다. 어느 태스크의 전송인지 알 수 없으므로 전부에 기록한다:
+ * 채널은 mutex 로 한 번에 한 태스크만 쓰고, 각 태스크는 mutex 를 잡은 뒤 자기 dmaDone 을
+ * 0 으로 지우고 시작하므로 소유자가 아닌 태스크의 플래그가 1 이 되어도 영향이 없다.
+ * (Secure IRQ 우선순위에서 실행되므로 FreeRTOS API 는 호출하지 않는다.) */
 static void App_DmaDoneCallback(uint32_t status)
 {
-    s_dmaCbStatus = status;
-    s_dmaDone = 1;
+    for (uint32_t i = 0; i < DMA_TASK_NUM; i++)
+    {
+        s_dmaTaskMem[i].globals.v.dmaStatus = (uint8_t)status;
+        s_dmaTaskMem[i].globals.v.dmaDone   = 1u;
+    }
 }
 
 #define DMA_BENCH_XFER_LEN   8u
 #define DMA_BENCH_ITERS      32u
 
-static void DmaTask_RunBenchmark(uint8_t *srcBuf, uint8_t *dstBuf,
-                                  volatile cycle_stat_t *medStat,
-                                  volatile cycle_stat_t *rtStat)
+static void DmaTask_RunBenchmark(uint8_t *srcBuf, uint8_t *dstBuf, dma_task_globals_t *g)
 {
+    volatile cycle_stat_t *medStat = &g->statMediator;
+    volatile cycle_stat_t *rtStat  = &g->statRoundtrip;
     uint32_t medMin = 0xFFFFFFFFu, medMax = 0u, medSum = 0u;
     uint32_t rtMin  = 0xFFFFFFFFu, rtMax  = 0u, rtSum  = 0u;
     uint32_t okCount = 0u;
@@ -187,16 +201,18 @@ static void DmaTask_RunBenchmark(uint8_t *srcBuf, uint8_t *dstBuf,
     rtStat->min  = 0xFFFFFFFFu; rtStat->max  = 0u; rtStat->avg  = 0u;
 
     /* 캐시 워밍 (논문 §4 "캐시가 채워진 상태"): 측정 전 더미 전송 1회 */
-    xSemaphoreTake(s_dmaChannelMutex, portMAX_DELAY);
-    s_dmaDone = 0;
-    (void)SECURE_dma_m2m_start(srcBuf, dstBuf, DMA_BENCH_XFER_LEN);
-    while (!s_dmaDone) { }
-    xSemaphoreGive(s_dmaChannelMutex);
+    xSemaphoreTake(g->dmaMutex, portMAX_DELAY);
+    g->dmaDone = 0;
+    if (SECURE_dma_m2m_start(srcBuf, dstBuf, DMA_BENCH_XFER_LEN) == 0)
+    {
+        while (!g->dmaDone) { }   /* 거부 시 콜백이 오지 않으므로 대기하지 않는다 */
+    }
+    xSemaphoreGive(g->dmaMutex);
 
     for (uint32_t i = 0; i < DMA_BENCH_ITERS; i++)
     {
-        xSemaphoreTake(s_dmaChannelMutex, portMAX_DELAY);
-        s_dmaDone = 0;
+        xSemaphoreTake(g->dmaMutex, portMAX_DELAY);
+        g->dmaDone = 0;
 
         __DSB(); __ISB();
         uint32_t t0 = DWT->CYCCNT;
@@ -207,13 +223,13 @@ static void DmaTask_RunBenchmark(uint8_t *srcBuf, uint8_t *dstBuf,
         if (r != 0)
         {
             /* 채널이 사용 중이거나 검증이 거부됨: 이번 회차는 통계에서 제외 */
-            xSemaphoreGive(s_dmaChannelMutex);
+            xSemaphoreGive(g->dmaMutex);
             continue;
         }
 
-        while (!s_dmaDone) { }
+        while (!g->dmaDone) { }
         uint32_t t2 = DWT->CYCCNT;   /* 전송 + Secure ISR 까지 포함한 왕복 비용 */
-        xSemaphoreGive(s_dmaChannelMutex);
+        xSemaphoreGive(g->dmaMutex);
 
         uint32_t dMed = t1 - t0;
         uint32_t dRt  = t2 - t0;
@@ -261,27 +277,31 @@ static void DmaTask_RunBenchmark(uint8_t *srcBuf, uint8_t *dstBuf,
  */
 static void AttackScenario_ArgTamper_TaskA(void)
 {
-    xSemaphoreTake(s_dmaChannelMutex, portMAX_DELAY);
-    s_dmaDone = 0;
+    dma_task_globals_t *g = &s_dmaTaskMem[DMA_TASK_A].globals.v;
+
+    xSemaphoreTake(g->dmaMutex, portMAX_DELAY);
+    g->dmaDone = 0;
     int r = SECURE_dma_m2m_start(s_dmaSrcA, s_dmaTaskMem[DMA_TASK_B].cluster.dst, DMA_BENCH_XFER_LEN);
     configASSERT(r != 0);  /* (a-1) 반드시 거부되어야 함 */
     r = SECURE_dma_m2m_start(s_dmaSrcA, s_dmaTaskMem[DMA_TASK_A].globals.raw, DMA_BENCH_XFER_LEN);
     configASSERT(r != 0);  /* (a-2) 반드시 거부되어야 함 */
-    xSemaphoreGive(s_dmaChannelMutex);
+    xSemaphoreGive(g->dmaMutex);
 }
 
 static void AttackScenario_OverflowAfterVerify_TaskA(void)
 {
     const uint32_t oversizedLen = sizeof(s_dmaTaskMem[DMA_TASK_A].cluster.dst) + 32u; /* Cluster 를 넘어 guard 까지 */
 
-    xSemaphoreTake(s_dmaChannelMutex, portMAX_DELAY);
-    s_dmaDone = 0;
+    dma_task_globals_t *g = &s_dmaTaskMem[DMA_TASK_A].globals.v;
+
+    xSemaphoreTake(g->dmaMutex, portMAX_DELAY);
+    g->dmaDone = 0;
     int r = SECURE_dma_m2m_start(s_dmaSrcA, s_dmaTaskMem[DMA_TASK_A].cluster.dst, oversizedLen);
     if (r == 0)
     {
-        while (!s_dmaDone) { }   /* 2차 방어선(가드 블록+TZIC)이 채널을 중단시킬 때까지 대기 */
+        while (!g->dmaDone) { }   /* 2차 방어선(가드 블록+TZIC)이 채널을 중단시킬 때까지 대기 */
     }
-    xSemaphoreGive(s_dmaChannelMutex);
+    xSemaphoreGive(g->dmaMutex);
 }
 #endif
 
@@ -298,17 +318,19 @@ static void vDmaTaskA( void *pvParameters )
 
   for (uint32_t i = 0; i < sizeof(s_dmaSrcA); i++) { s_dmaSrcA[i] = (uint8_t)i; }
 
-  DmaTask_RunBenchmark(s_dmaSrcA, s_dmaTaskMem[DMA_TASK_A].cluster.dst,
-                       &s_dmaTaskMem[DMA_TASK_A].globals.v.statMediator,
-                       &s_dmaTaskMem[DMA_TASK_A].globals.v.statRoundtrip);
+  dma_task_globals_t *g = &s_dmaTaskMem[DMA_TASK_A].globals.v;
+
+  DmaTask_RunBenchmark(s_dmaSrcA, s_dmaTaskMem[DMA_TASK_A].cluster.dst, g);
 
   for( ;; )
   {
-    xSemaphoreTake(s_dmaChannelMutex, portMAX_DELAY);
-    s_dmaDone = 0;
-    (void)SECURE_dma_m2m_start(s_dmaSrcA, s_dmaTaskMem[DMA_TASK_A].cluster.dst, DMA_BENCH_XFER_LEN);
-    while (!s_dmaDone) { }
-    xSemaphoreGive(s_dmaChannelMutex);
+    xSemaphoreTake(g->dmaMutex, portMAX_DELAY);
+    g->dmaDone = 0;
+    if (SECURE_dma_m2m_start(s_dmaSrcA, s_dmaTaskMem[DMA_TASK_A].cluster.dst, DMA_BENCH_XFER_LEN) == 0)
+    {
+      while (!g->dmaDone) { }
+    }
+    xSemaphoreGive(g->dmaMutex);
 
     vTaskDelay(pdMS_TO_TICKS(500));
   }
@@ -321,17 +343,19 @@ static void vDmaTaskB( void *pvParameters )
 
   for (uint32_t i = 0; i < sizeof(s_dmaSrcB); i++) { s_dmaSrcB[i] = (uint8_t)i; }
 
-  DmaTask_RunBenchmark(s_dmaSrcB, s_dmaTaskMem[DMA_TASK_B].cluster.dst,
-                       &s_dmaTaskMem[DMA_TASK_B].globals.v.statMediator,
-                       &s_dmaTaskMem[DMA_TASK_B].globals.v.statRoundtrip);
+  dma_task_globals_t *g = &s_dmaTaskMem[DMA_TASK_B].globals.v;
+
+  DmaTask_RunBenchmark(s_dmaSrcB, s_dmaTaskMem[DMA_TASK_B].cluster.dst, g);
 
   for( ;; )
   {
-    xSemaphoreTake(s_dmaChannelMutex, portMAX_DELAY);
-    s_dmaDone = 0;
-    (void)SECURE_dma_m2m_start(s_dmaSrcB, s_dmaTaskMem[DMA_TASK_B].cluster.dst, DMA_BENCH_XFER_LEN);
-    while (!s_dmaDone) { }
-    xSemaphoreGive(s_dmaChannelMutex);
+    xSemaphoreTake(g->dmaMutex, portMAX_DELAY);
+    g->dmaDone = 0;
+    if (SECURE_dma_m2m_start(s_dmaSrcB, s_dmaTaskMem[DMA_TASK_B].cluster.dst, DMA_BENCH_XFER_LEN) == 0)
+    {
+      while (!g->dmaDone) { }
+    }
+    xSemaphoreGive(g->dmaMutex);
 
     vTaskDelay(pdMS_TO_TICKS(700));
   }
@@ -412,10 +436,19 @@ void vCreateAppTasks( void )
   s_dmaChannelMutex = xSemaphoreCreateMutex();
   configASSERT(s_dmaChannelMutex != NULL);
 
+  /* 태스크가 읽을 수 있도록 각자의 globals 에 핸들 사본을 둔다 (특권, 스케줄러 시작 전) */
+  s_dmaTaskMem[DMA_TASK_A].globals.v.dmaMutex = s_dmaChannelMutex;
+  s_dmaTaskMem[DMA_TASK_B].globals.v.dmaMutex = s_dmaChannelMutex;
+
   SECURE_dma_m2m_init((void *)App_DmaDoneCallback);
 
-  xTaskCreateRestricted( &xDmaTaskAParams, NULL );
-  xTaskCreateRestricted( &xDmaTaskBParams, NULL );
+  TaskHandle_t hDmaTaskA = NULL, hDmaTaskB = NULL;
+  xTaskCreateRestricted( &xDmaTaskAParams, &hDmaTaskA );
+  xTaskCreateRestricted( &xDmaTaskBParams, &hDmaTaskB );
+  /* configENABLE_ACCESS_CONTROL_LIST = 1: 권한을 주지 않으면 비특권 태스크의
+   * xSemaphoreTake/Give 가 MPU wrapper 에서 즉시 pdFAIL 로 끝난다. */
+  vGrantAccessToSemaphore( hDmaTaskA, s_dmaChannelMutex );
+  vGrantAccessToSemaphore( hDmaTaskB, s_dmaChannelMutex );
   xTaskCreateRestricted( &xPlainTaskParams, NULL );
 }
 
