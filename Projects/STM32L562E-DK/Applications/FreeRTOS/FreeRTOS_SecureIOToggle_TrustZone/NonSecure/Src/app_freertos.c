@@ -189,6 +189,27 @@ static void App_DmaDoneCallback(uint32_t status)
 #define DMA_BENCH_XFER_LEN   8u
 #define DMA_BENCH_ITERS      32u
 
+/* 사이클 측정(논문 §4, 표 2) 스위치.
+ * DWT->CYCCNT 는 PPB(0xE0001004)에 있어 비특권 접근 시 BusFault 가 나므로
+ * (NS-MPU 로 허용 불가) [아키텍처 도출], 측정할 때는 DMA 태스크를 특권
+ * (portPRIVILEGE_BIT)으로 만든다. NS-MPU 영역 구성(xRegions)은 그대로이고,
+ * verify_inst() 는 호출자 권한과 무관하게 TTAT(비특권 기준)로 조회하므로
+ * 중재자 판정과 경로 비용은 비특권 호출과 같다 [아키텍처 도출].
+ * 표 2 와 같은 NS->NS 왕복(SG/BXNS 상태 전환 포함) 기준이다.
+ *   1: DMA 태스크 특권 + 벤치마크 실행
+ *   0: DMA 태스크 비특권(격리 실증) + 벤치마크 생략 */
+#ifndef DMA_BENCH_ENABLE
+#define DMA_BENCH_ENABLE     1
+#endif
+
+#if DMA_BENCH_ENABLE
+#define DMA_TASK_PRIV_BIT    portPRIVILEGE_BIT
+#else
+#define DMA_TASK_PRIV_BIT    0u
+#endif
+
+#if DMA_BENCH_ENABLE
+
 static void DmaTask_RunBenchmark(uint8_t *srcBuf, uint8_t *dstBuf, dma_task_globals_t *g)
 {
     volatile cycle_stat_t *medStat = &g->statMediator;
@@ -250,6 +271,7 @@ static void DmaTask_RunBenchmark(uint8_t *srcBuf, uint8_t *dstBuf, dma_task_glob
         rtStat->min  = rtMin;  rtStat->max  = rtMax;  rtStat->avg  = rtSum  / okCount;
     }
 }
+#endif /* DMA_BENCH_ENABLE */
 
 #if 0
 /* ---------------------------------------------------------------------------
@@ -320,7 +342,9 @@ static void vDmaTaskA( void *pvParameters )
 
   dma_task_globals_t *g = &s_dmaTaskMem[DMA_TASK_A].globals.v;
 
+#if DMA_BENCH_ENABLE
   DmaTask_RunBenchmark(s_dmaSrcA, s_dmaTaskMem[DMA_TASK_A].cluster.dst, g);
+#endif
 
   for( ;; )
   {
@@ -345,7 +369,9 @@ static void vDmaTaskB( void *pvParameters )
 
   dma_task_globals_t *g = &s_dmaTaskMem[DMA_TASK_B].globals.v;
 
+#if DMA_BENCH_ENABLE
   DmaTask_RunBenchmark(s_dmaSrcB, s_dmaTaskMem[DMA_TASK_B].cluster.dst, g);
+#endif
 
   for( ;; )
   {
@@ -385,7 +411,7 @@ static const TaskParameters_t xDmaTaskAParams =
   .pcName = "DMA_Task_A",
   .usStackDepth = STACK_SIZE_WORDS,
   .pvParameters = NULL,
-  .uxPriority =  (tskIDLE_PRIORITY + 1 ),
+  .uxPriority =  (tskIDLE_PRIORITY + 1 ) | DMA_TASK_PRIV_BIT,   /* DMA_BENCH_ENABLE 참고 */
   .puxStackBuffer = xDmaTaskAStack,
   .xRegions =
   {
@@ -405,7 +431,7 @@ static const TaskParameters_t xDmaTaskBParams =
   .pcName = "DMA_Task_B",
   .usStackDepth = STACK_SIZE_WORDS,
   .pvParameters = NULL,
-  .uxPriority =  (tskIDLE_PRIORITY + 1 ),
+  .uxPriority =  (tskIDLE_PRIORITY + 1 ) | DMA_TASK_PRIV_BIT,   /* DMA_BENCH_ENABLE 참고 */
   .puxStackBuffer = xDmaTaskBStack,
   .xRegions =
   {
