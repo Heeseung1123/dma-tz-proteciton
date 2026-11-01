@@ -8,3 +8,4 @@
 | 〃 | NonSecure/Src/app_freertos.c | DMA_Task_A/B(M2M, 전용 Cluster) + Plain_Task 로 평가용 Application 전면 교체, 중재자/ISR 사이클 측정 추가 | §4 | 신규 | 빌드만, 보드 미검증 |
 | 〃 | Secure/Src/main.c | SMPU_SetupProbeRegion → SMPU_SetupTaskRegions: 태스크 Cluster 2개에 맞춘 S-MPU 영역 2개 + MPCBB 가드 2개 하드코딩 | §3.1(부분)/§3.3 | 기존 함수 대체 | 빌드만, 보드 미검증 |
 | 〃 | docs/poc-inventory.md, docs/gap-analysis.md, docs/impl-notes-2026-10-31.md | 논문 vs 코드 조사 및 결정사항/구현 기록 | - | 신규 문서 | - |
+| (이 커밋) | NonSecure/Src/app_freertos.c, Secure/Src/main.c | 메모리 배치를 논문대로 수정: 태스크 전역 데이터(32B) -> DMA Cluster(dst 224B) -> 가드(256B)를 구조체 하나로 고정, NS-MPU 영역 1개 = 전역+Cluster, S-MPU 는 Cluster 에만, Secure 하드코딩 주소 갱신(BODY->CLUSTER), 공격 (a-2) 전역 데이터 대상 추가(#if 0) | §3.1 | 기존 struct/하드코딩 패턴 재사용 | 빌드 + nm 주소 확인, 보드 미검증 |

@@ -386,34 +386,41 @@ void Secure_TZIC_Init(void)
  * docs/gap-analysis.md 결정에 따라 이번 라운드에서는 §3.1 의 Cluster/가드 자동 배치는
  * 구현하지 않는다. 대신 기존 SMPU_SetupProbeRegion() 과 동일한 방식(수동 하드코딩)을
  * NonSecure 쪽 두 DMA 태스크(DMA_Task_A/B, project/NonSecure/Src/app_freertos.c 의
- * s_dmaClusterA/B)에 맞춰 그대로 반복한다.
+ * s_dmaTaskMemA/B)에 맞춰 그대로 반복한다.
+ *
+ * NS 쪽 배치(§3.1, 주소 증가 순): 태스크 전역 데이터(32B) -> DMA Cluster(224B) -> 가드(256B).
+ * 전역 데이터 + Cluster 는 NS-MPU 영역 하나, Cluster 는 S-MPU 영역 하나, 가드는 MPCBB.
  *
  * 주소는 NonSecure 쪽을 먼저 빌드한 뒤 아래 방법으로 직접 읽은 값이다(추후 버퍼
  * 선언이나 레이아웃이 바뀌면 다시 읽어 갱신해야 한다 — 자동 동기화 없음, 지침대로
  * 테이블/링커 섹션을 쓰지 않기로 했기 때문):
  *   arm-none-eabi-nm Projects/.../NonSecure/Debug/FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf \
- *       | grep -E " s_dmaCluster(A|B)"
- * 결과(2026-10-31):
- *   2001b900 b s_dmaClusterA   (body 0x2001b900-0x2001b9ff, guard 0x2001ba00-0x2001baff)
- *   2001b700 b s_dmaClusterB   (body 0x2001b700-0x2001b7ff, guard 0x2001b800-0x2001b8ff)
+ *       | grep -E " s_dmaTaskMem(A|B)"
+ * 결과(2026-11-01):
+ *   2001b800 b s_dmaTaskMemA  (globals 0x2001b800-81f, cluster 0x2001b820-8ff, guard 0x2001b900-9ff)
+ *   2001b600 b s_dmaTaskMemB  (globals 0x2001b600-61f, cluster 0x2001b620-6ff, guard 0x2001b700-7ff)
  *
- * S-MPU 영역 4,5 는 각 태스크 Cluster 의 body(256B) 만 태그한다. guard 는 어떤
- * S-MPU 영역에도 포함하지 않는다 — Secure_nsc.c 의 verify_inst() 가 TTT 로 base 와
- * base+len-1 의 영역 번호를 비교할 때, len 이 body 를 넘어가면(공격 시나리오 (b))
- * end 주소가 이 영역 밖(= 다른 영역 또는 invalid)이 되어 영역 번호가 달라지므로
- * 거부되게 하기 위함이다.
+ * S-MPU 영역 4,5 는 각 태스크의 Cluster(224B) 만 태그한다. 태스크 전역 데이터와 guard 는
+ * 어떤 S-MPU 영역에도 포함하지 않는다 — Secure_nsc.c 의 verify_inst() 가 TTT 로 base 와
+ * base+len-1 의 영역을 조회할 때, base 가 전역 데이터를 가리키거나(같은 NS-MPU 영역이라
+ * TTAT 는 통과) len 이 Cluster 를 넘어가면(공격 시나리오 (b), end 가 guard 안) 영역이
+ * 무효/불일치가 되어 거부되게 하기 위함이다.
  */
-#define DMA_TASK_A_BODY_BASE   0x2001b900u
-#define DMA_TASK_A_BODY_SIZE   0x100u                                   /* 256B */
-#define DMA_TASK_A_BODY_LIMIT  (DMA_TASK_A_BODY_BASE + DMA_TASK_A_BODY_SIZE - 1u)
-#define DMA_TASK_A_GUARD_BASE  (DMA_TASK_A_BODY_BASE + DMA_TASK_A_BODY_SIZE)
-#define DMA_TASK_A_SMPU_REGION 4u
+#define DMA_TASK_A_CLUSTER_BASE   0x2001b820u
+#define DMA_TASK_A_CLUSTER_SIZE   0xE0u                                       /* 224B */
+#define DMA_TASK_A_CLUSTER_LIMIT  (DMA_TASK_A_CLUSTER_BASE + DMA_TASK_A_CLUSTER_SIZE - 1u)
+#define DMA_TASK_A_GUARD_BASE     (DMA_TASK_A_CLUSTER_BASE + DMA_TASK_A_CLUSTER_SIZE) /* 0x2001b900 */
+#define DMA_TASK_A_SMPU_REGION    4u
 
-#define DMA_TASK_B_BODY_BASE   0x2001b700u
-#define DMA_TASK_B_BODY_SIZE   0x100u                                   /* 256B */
-#define DMA_TASK_B_BODY_LIMIT  (DMA_TASK_B_BODY_BASE + DMA_TASK_B_BODY_SIZE - 1u)
-#define DMA_TASK_B_GUARD_BASE  (DMA_TASK_B_BODY_BASE + DMA_TASK_B_BODY_SIZE)
-#define DMA_TASK_B_SMPU_REGION 5u
+#define DMA_TASK_B_CLUSTER_BASE   0x2001b620u
+#define DMA_TASK_B_CLUSTER_SIZE   0xE0u                                       /* 224B */
+#define DMA_TASK_B_CLUSTER_LIMIT  (DMA_TASK_B_CLUSTER_BASE + DMA_TASK_B_CLUSTER_SIZE - 1u)
+#define DMA_TASK_B_GUARD_BASE     (DMA_TASK_B_CLUSTER_BASE + DMA_TASK_B_CLUSTER_SIZE) /* 0x2001b700 */
+#define DMA_TASK_B_SMPU_REGION    5u
+
+#if (DMA_TASK_A_GUARD_BASE & 0xFFu) || (DMA_TASK_B_GUARD_BASE & 0xFFu)
+#error "guard base must be MPCBB 256B block aligned"
+#endif
 
 static void SMPU_SetupOneTaskRegion(uint32_t region, uint32_t base, uint32_t limit)
 {
@@ -436,8 +443,8 @@ static void SMPU_SetupTaskRegions(void)
 
     MPU->MAIR0 = 0xFFu;
 
-    SMPU_SetupOneTaskRegion(DMA_TASK_A_SMPU_REGION, DMA_TASK_A_BODY_BASE, DMA_TASK_A_BODY_LIMIT);
-    SMPU_SetupOneTaskRegion(DMA_TASK_B_SMPU_REGION, DMA_TASK_B_BODY_BASE, DMA_TASK_B_BODY_LIMIT);
+    SMPU_SetupOneTaskRegion(DMA_TASK_A_SMPU_REGION, DMA_TASK_A_CLUSTER_BASE, DMA_TASK_A_CLUSTER_LIMIT);
+    SMPU_SetupOneTaskRegion(DMA_TASK_B_SMPU_REGION, DMA_TASK_B_CLUSTER_BASE, DMA_TASK_B_CLUSTER_LIMIT);
 
     MPU->CTRL = MPU_CTRL_PRIVDEFENA_Msk | MPU_CTRL_ENABLE_Msk;
     __DSB();
