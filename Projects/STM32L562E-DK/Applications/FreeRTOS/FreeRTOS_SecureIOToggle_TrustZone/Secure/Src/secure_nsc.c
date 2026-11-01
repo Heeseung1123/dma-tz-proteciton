@@ -136,18 +136,48 @@ static volatile uint8_t s_busy;
 
 
 
-void Secure_TZIC_ArmGuardIrqOnce(void);   /* tzic_arm.c */
+/*
+ * TZIC SRAM1 illegal-access 인터럽트(IER3.SRAM1IE) 지연 활성화 (§3.3).
+ *
+ * 부팅 시가 아니라 여기서 켜는 이유: 가드 블록(NS s_dmaTaskMem[].guard)은 Secure 부팅 중
+ * MPCBB Secure 로 설정된다(main.c SMPU_SetupTaskRegions). 이후 NS Reset_Handler 가 .bss 를
+ * 0 으로 채우며 가드에 쓰면, 쓰기는 MPCBB 가 무시하지만 TZIC SR3.SRAM1F 가 서고 IER 이 켜져
+ * 있으면 GTZC_IRQHandler 가 워드마다 재진입한다 [실측]. 그래서 부팅 중에는 IER3.SRAM1IE 를
+ * 꺼 두고(main.c Secure_TZIC_Init), SECURE_dma_m2m_init() 의 첫 동작으로 여기서 켠다.
+ * M2M 모드(CCR.MEM2MEM)·TCIE/TEIE·NS 콜백은 init 에서만 설정되므로 M2M 전송은 IER 이 켜진
+ * 뒤에만 가능하다 [아키텍처 도출]. 측정 경로(verify_inst, SECURE_dma_m2m_start, SECURE_nop3)
+ * 에는 분기/플래그 검사를 추가하지 않는다.
+ *
+ * 레지스터 근거:
+ *   - TZIC_IER3/SR3/FCR3 오프셋 0x08/0x18/0x28, bit4 = SRAM1: CMSIS stm32l562xx.h
+ *     GTZC_TZIC_TypeDef 및 GTZC_CFGR3_SRAM1_Pos(4). RM0438 GTZC 장 TZIC 레지스터 절 번호: 미확인.
+ *   - IER 이 꺼져 있어도 SR 플래그는 선다: [실측](부팅 시 오발 관찰) / RM 근거 미확인.
+ *   - CMSIS 함정: GTZC_TZIC_FCR3_MPCBB1FC_Msk 는 정의되지 않은 GTZC_CFGR3_MPCBB1_Msk 를
+ *     참조한다(stm32l562xx.h). 그래서 FCR3 값은 GTZC_TZIC_FCR3_MPCBB1FC_Pos(= SRAM1_Pos)로 만든다.
+ */
+uint32_t g_tzic_sr3_at_arm;   /* 감사용: IER 을 켜기 직전의 SR3. 기대 bit4(SRAM1F)=1 */
+
+static void Secure_TZIC_ArmGuardIrqOnce(void)
+{
+    /* IER 비트 자체가 1회 실행 판정. 재호출 시 위반 흔적(SR3)을 지우지 않는다. */
+    if ((GTZC_TZIC_S->IER3 & GTZC_TZIC_IER3_SRAM1IE_Msk) == 0U)
+    {
+        /* 순서 고정: 기록 -> 지움 -> 켬. 지우기 전에 켜면 즉시 재진입한다. */
+        g_tzic_sr3_at_arm = GTZC_TZIC_S->SR3;
+        GTZC_TZIC_S->FCR3 = (1UL << GTZC_TZIC_FCR3_MPCBB1FC_Pos);   /* SRAM1F 지움 */
+        __DSB();
+        NVIC_ClearPendingIRQ(GTZC_IRQn);
+        GTZC_TZIC_S->IER3 |= GTZC_TZIC_IER3_SRAM1IE_Msk;
+        __DSB();
+        __ISB();
+    }
+}
 
 secureportNON_SECURE_CALLABLE int SECURE_dma_m2m_init(void *ns_cb)
 {
-    /* 첫 DMA 전에 TZIC SRAM1IE 를 켠다 (SR3 기록 -> FCR3 지움 -> IER 켬, DMA1 클록 enable 포함).
-     * CCR(MEM2MEM/TCIE/TEIE) 설정보다 먼저 실행되어야 한다. */
+    /* 첫 DMA 전에 TZIC SRAM1IE 를 켠다. CCR(MEM2MEM/TCIE/TEIE) 설정보다 먼저 실행되어야 한다. */
     Secure_TZIC_ArmGuardIrqOnce();
-    /* 크기 보존 패딩: 원래 이 자리의 __HAL_RCC_DMA1_CLK_ENABLE() 와 같은 바이트 수를 유지해
-     * 뒤에 오는 측정 경로(verify_inst, SECURE_dma_m2m_start, SECURE_nop3)와 SG veneer 의
-     * 주소/기계어가 바뀌지 않게 한다. 이 함수 크기는 0xd8 이어야 한다(nm -S 로 확인). */
-    __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
-    __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+    __HAL_RCC_DMA1_CLK_ENABLE();
     NVIC_ClearTargetState(DMA_CH_IRQn);
     NVIC_SetPriority(DMA_CH_IRQn, 5);
     NVIC_EnableIRQ(DMA_CH_IRQn);
