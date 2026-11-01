@@ -136,9 +136,18 @@ static volatile uint8_t s_busy;
 
 
 
+void Secure_TZIC_ArmGuardIrqOnce(void);   /* tzic_arm.c */
+
 secureportNON_SECURE_CALLABLE int SECURE_dma_m2m_init(void *ns_cb)
 {
-    __HAL_RCC_DMA1_CLK_ENABLE();
+    /* 첫 DMA 전에 TZIC SRAM1IE 를 켠다 (SR3 기록 -> FCR3 지움 -> IER 켬, DMA1 클록 enable 포함).
+     * CCR(MEM2MEM/TCIE/TEIE) 설정보다 먼저 실행되어야 한다. */
+    Secure_TZIC_ArmGuardIrqOnce();
+    /* 크기 보존 패딩: 원래 이 자리의 __HAL_RCC_DMA1_CLK_ENABLE() 와 같은 바이트 수를 유지해
+     * 뒤에 오는 측정 경로(verify_inst, SECURE_dma_m2m_start, SECURE_nop3)와 SG veneer 의
+     * 주소/기계어가 바뀌지 않게 한다. 이 함수 크기는 0xd8 이어야 한다(nm -S 로 확인). */
+    __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
+    __NOP(); __NOP(); __NOP(); __NOP(); __NOP(); __NOP();
     NVIC_ClearTargetState(DMA_CH_IRQn);
     NVIC_SetPriority(DMA_CH_IRQn, 5);
     NVIC_EnableIRQ(DMA_CH_IRQn);

@@ -32,3 +32,4 @@
 "./Middlewares/FreeRTOS/secure_context_port.o"
 "./Middlewares/FreeRTOS/secure_heap.o"
 "./Middlewares/FreeRTOS/secure_init.o"
+"./Application/User/tzic_arm.o"

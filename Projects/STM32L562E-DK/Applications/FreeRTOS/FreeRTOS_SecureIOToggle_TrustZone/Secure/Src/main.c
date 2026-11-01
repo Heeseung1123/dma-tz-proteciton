@@ -365,10 +365,13 @@ void Secure_TZIC_Init(void)
     GTZC_TZIC_S->FCR2 = 0xFFFFFFFFU;
     GTZC_TZIC_S->FCR3 = 0xFFFFFFFFU;
 
-    //Unmask TZIC SRAM Interrupt 
+    /* 부팅 중에는 TZIC SRAM1 인터럽트를 꺼 둔다. NS .bss 0 채우기가 MPCBB Secure 가드에
+     * 쓸 때 GTZC_IRQHandler 가 오발하기 때문이다. SRAM1IE 는 첫 DMA 전에
+     * SECURE_dma_m2m_init() -> Secure_TZIC_ArmGuardIrqOnce() (tzic_arm.c) 가 켠다.
+     * (|= -> &= ~ 는 orr.w -> bic.w 로 길이가 같아 이 함수 크기/뒤 주소가 바뀌지 않는다) */
     GTZC_TZIC_S->IER1 = 0U;
     GTZC_TZIC_S->IER2 = 0U;
-    GTZC_TZIC_S->IER3 |= 0b10000U;
+    GTZC_TZIC_S->IER3 &= ~GTZC_TZIC_IER3_SRAM1IE_Msk;
 
     // NVIC 
     NVIC_ClearPendingIRQ(GTZC_IRQn);
