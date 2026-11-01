@@ -244,15 +244,13 @@ int verify_inst(uint32_t addr, uint32_t len)
         "BCS    1f                      \n"   /* 오버플로면 거부 (TT 계열은 플래그를 바꾸지 않으므로 먼저 검사해도 무방) */
         "TTAT   r1, r0                  \n"   /* [신규] r1 = NS-MPU(base),  비특권 기준 */
         "TTAT   r3, r2                  \n"   /* [신규] r3 = NS-MPU(end),   비특권 기준 (r2=end 보존됨) */
-        "EORS   r1, r1, r3              \n"   /* [신규] 두 NS-MPU 영역 번호 비교 (기존 S-MPU 블록과 동일한 방식) */
-        "LSLS   r1, r1, #24             \n"
+	"CMP	r1, r3			\n" 
         "BNE    1f                      \n"
         "UBFX   r1, r3, #19, #1         \n"   /* [신규] readwrite_ok (NS-MPU 쓰기 가능?) */
         "CBZ    r1, 1f                  \n"   /* [신규] NS-MPU 쓰기 불가 -> 거부 */
         "TTT    r3, r0                  \n"   /* r3 = S-MPU(base) (기존) */
         "TTT    r2, r2                  \n"   /* r2 = S-MPU(end)  (기존) */
-        "EORS   r1, r3, r2              \n"   /* 기존: 두 S-MPU 영역 번호 비교 */
-        "LSLS	r1, r1, #24             \n"
+	"CMP	r3, r2			\n"	
         "BNE    1f                      \n"
         "UBFX   r0, r3, #21, #1         \n"   /* 기존 그대로 (위 주석 참고) */
         "BX     lr                      \n"
