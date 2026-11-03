@@ -410,16 +410,16 @@ void Secure_TZIC_Init(void)
  * TTAT 는 통과) len 이 Cluster 를 넘어가면(공격 시나리오 (b), end 가 guard 안) 영역이
  * 무효/불일치가 되어 거부되게 하기 위함이다.
  */
-#define DMA_TASK_A_CLUSTER_BASE   0x2001af00u
+#define DMA_TASK_A_CLUSTER_BASE   0x2001b700u
 #define DMA_TASK_A_CLUSTER_SIZE   0x100u                                      /* 256B */
 #define DMA_TASK_A_CLUSTER_LIMIT  (DMA_TASK_A_CLUSTER_BASE + DMA_TASK_A_CLUSTER_SIZE - 1u)
-#define DMA_TASK_A_GUARD_BASE     (DMA_TASK_A_CLUSTER_BASE + DMA_TASK_A_CLUSTER_SIZE) /* 0x2001b000 */
+#define DMA_TASK_A_GUARD_BASE     (DMA_TASK_A_CLUSTER_BASE + DMA_TASK_A_CLUSTER_SIZE) /* 0x2001b800 */
 #define DMA_TASK_A_SMPU_REGION    4u
 
-#define DMA_TASK_B_CLUSTER_BASE   0x2001b200u
+#define DMA_TASK_B_CLUSTER_BASE   0x2001c000u
 #define DMA_TASK_B_CLUSTER_SIZE   0x100u                                      /* 256B */
 #define DMA_TASK_B_CLUSTER_LIMIT  (DMA_TASK_B_CLUSTER_BASE + DMA_TASK_B_CLUSTER_SIZE - 1u)
-#define DMA_TASK_B_GUARD_BASE     (DMA_TASK_B_CLUSTER_BASE + DMA_TASK_B_CLUSTER_SIZE) /* 0x2001b300 */
+#define DMA_TASK_B_GUARD_BASE     (DMA_TASK_B_CLUSTER_BASE + DMA_TASK_B_CLUSTER_SIZE) /* 0x2001c100 */
 #define DMA_TASK_B_SMPU_REGION    5u
 
 #if (DMA_TASK_A_GUARD_BASE & 0xFFu) || (DMA_TASK_B_GUARD_BASE & 0xFFu)
