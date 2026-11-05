@@ -1,7 +1,7 @@
 # D-Box 비교 기준값
 
 출처: A. Mera et al., "D-Box: DMA-enabled Compartmentalization for Embedded Applications", NDSS 2022.
-https://www.ndss-symposium.org/wp-content/uploads/2022-53-paper.pdf (로컬: docs/paper/dbox-ndss22.pdf, 미커밋)
+https://www.ndss-symposium.org/wp-content/uploads/2022-53-paper.pdf (로컬: docs/paper/dbox-ndss22.pdf)
 
 ## 조건
 | 항목 | D-Box | 근거 |
