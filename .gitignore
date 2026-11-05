@@ -16,3 +16,10 @@
 .build-logs/
 .build-shim/
 *.bak
+
+# 평가 산출물: 평가용 .list 도 디스크에만 보관
+results/**/*.list
+results/**/*.bin
+results/**/build.log
+__pycache__/
+*.swp

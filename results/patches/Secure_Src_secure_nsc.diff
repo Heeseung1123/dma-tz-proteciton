@@ -1,0 +1,43 @@
+--- project/Secure/Src/secure_nsc.c_bak	2026-11-05 10:59:29.377648503 +0900
++++ project/Secure/Src/secure_nsc.c	2026-11-05 11:59:35.227283823 +0900
+@@ -126,6 +126,16 @@
+ #include "stm32l5xx.h"
+ #include <arm_cmse.h>
+ 
++/* 중재자 사이클 측정 훅 (BENCH_TS 빌드에서만 코드 생성, bench_s.inc 참고) */
++#if defined(BENCH_PHASE) && defined(BENCH_TS)
++extern volatile uint32_t g_benchT1, g_benchT4;
++#define BENCH_T1()  (g_benchT1 = DWT->CYCCNT)
++#define BENCH_T4()  (g_benchT4 = DWT->CYCCNT)
++#else
++#define BENCH_T1()  ((void)0)
++#define BENCH_T4()  ((void)0)
++#endif
++
+ #define DMA_CH        DMA1_Channel1
+ #define DMA_CH_IRQn   DMA1_Channel1_IRQn
+ 
+@@ -303,6 +313,7 @@
+ int SECURE_dma_m2m_start(void *src_buf, void *dst_buf, uint32_t len)
+ 
+ {
++    BENCH_T1();
+     if (len == 0 || s_busy) return -1;
+     uint32_t a = (uint32_t)(uintptr_t)dst_buf; 
+     if (!verify_inst(a, len)) return -1;
+@@ -315,6 +326,7 @@
+     DMA_CH->CNDTR = len;             
+     DMA1->IFCR    = DMA_IFCR_CGIF1;
+     DMA_CH->CCR  |= DMA_CCR_EN;      
++    BENCH_T4();
+ 
+     return 0;
+ }
+@@ -355,3 +367,7 @@
+     __DSB();
+ 
+ }
++
++#ifdef BENCH_PHASE
++#include "bench_s.inc"
++#endif

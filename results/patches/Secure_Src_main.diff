@@ -1,0 +1,11 @@
+--- project/Secure/Src/main.c_bak	2026-11-05 10:59:29.381648506 +0900
++++ project/Secure/Src/main.c	2026-11-05 11:59:35.227283823 +0900
+@@ -280,7 +280,7 @@
+   {
+     Error_Handler();
+   }
+-#if 0 
++#if defined(BENCH_ICACHE)
+   if (HAL_ICACHE_Enable() != HAL_OK)
+   {
+     Error_Handler();
