@@ -1,0 +1,8 @@
+variant=default profile=P1 S=-O0 NS=-O1 defs=[]
+git=96795901123348690313ed555865c2d4d3e00ce0 dirty=
+arm-none-eabi-gcc (GNU Tools for STM32 14.3.rel1.20251027-0700) 14.3.1 20250623
+d4f9e9363a8360f938595836714c66ae10da3ecb0508cd1c143aa94b5299487d  FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf
+59d1b6ea6908f2725694571638d333df21b2d729fdb680402dbca0466534283c  FreeRTOS_SecureIOToggle_TrustZone_Secure.elf
+   text	   data	    bss	    dec	    hex	filename
+  35416	  10240	  12624	  58280	   e3a8	results/phase0/default/FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf
+  11072	     40	  11984	  23096	   5a38	results/phase0/default/FreeRTOS_SecureIOToggle_TrustZone_Secure.elf
