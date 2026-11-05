@@ -1,0 +1,15 @@
+ok id=50 n=10 arg=1
+ok id=51 n=10 arg=2
+ok id=52 n=10 arg=4
+ok id=53 n=10 arg=8
+ok id=54 n=10 arg=16
+ok id=55 n=10 arg=25
+ok id=56 n=10 arg=32
+ok id=57 n=10 arg=50
+ok id=58 n=10 arg=64
+ok id=59 n=10 arg=75
+ok id=60 n=10 arg=100
+ok id=61 n=10 arg=128
+ok id=62 n=10 arg=200
+ok id=63 n=10 arg=256
+done
