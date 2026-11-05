@@ -6,6 +6,10 @@
 - 측정 보고서: [`results/report.md`](results/report.md)
 - 대상: STM32L562E-DK (Cortex-M33, 110MHz). Secure는 베어메탈, NonSecure는 FreeRTOS V11.3.1 (MPU wrappers v2)
 
+![제안 기법의 메모리·보호 수단 배치와 검증·탐지 흐름](docs/paper/figures/fig2_design_overview.png)
+
+*논문 그림 2. 제안 기법 메모리, 보호 수단 배치 및 검증, 탐지 흐름*
+
 ## 논문 요약
 
 ### 문제
@@ -25,25 +29,47 @@ DMA는 CPU와 독립된 버스 마스터라서 MPU와 DWT 워치포인트처럼 
 
 위협 모델은 Secure 펌웨어, NS 커널, 부트 과정을 신뢰 기반으로 둡니다. 물리 공격과 부채널 공격은 범위 밖입니다.
 
+### 전제: FreeRTOS-MPU 영역 구성
+
+![FreeRTOS-MPU(PMSAv8) MPU 영역 설정](docs/paper/figures/fig1_freertos_mpu_regions.png)
+
+*논문 그림 1. FreeRTOS-MPU(PMSAv8) MPU 영역 설정*
+
+NS-MPU 8개 영역 중 5개(Region 0~4)는 커널 코드·데이터, 시스템 콜, 태스크 코드·스택에 고정으로 쓰고, 태스크마다 사용자 영역 3개(Region 5~7)만 남습니다. 스택과 사용자 영역은 context switch 때 태스크별로 재설정됩니다.
+
+MPU 영역이 이렇게 적기 때문에 영역 단위 검증은 DMA 버퍼와 같은 영역의 일반 데이터를 구분하지 못합니다. 제안 기법은 NS-MPU 영역을 추가로 쓰지 않고, 이와 독립된 S-MPU를 버퍼 태그로 사용합니다.
+
 ### 설계
 
-**메모리 배치 (§3.1).** 태스크마다 DMA 버퍼를 하나의 연속 구간(DMA Cluster)으로 모으고, 다음 순서로 배치합니다. DMA 주소는 아래로 갈수록 증가합니다.
+그림 2의 번호를 기준으로 설명합니다.
 
-```
-태스크 전역 데이터   (NS-MPU 영역 안, S-MPU 태그 없음)
-DMA Cluster         (NS-MPU 영역 안, S-MPU 영역 1개 = TTT 태그)
-가드 블록 256B       (MPCBB Secure, NS 데이터를 두지 않음)
-```
+**메모리 배치 (§3.1).** 태스크마다 DMA 버퍼를 하나의 연속 구간(DMA Cluster)으로 모으고, 주소가 증가하는 방향으로 태스크 데이터, Cluster, 가드 블록 순서로 배치합니다. 그림에서는 위쪽이 높은 주소입니다.
 
-**요청 시점 검증: Secure DMA 중재자 (§3.2).** DMA 컨트롤러와 채널은 Secure에 두어 NS 코드가 직접 설정할 수 없습니다. 요청 `(base, len)`은 NSC 진입점에서 다음과 같이 검사합니다.
+| 구간 | 그림 표시 | 보호 |
+|---|---|---|
+| 태스크 전역 데이터 (Task data) | 파란 괄호 안 | NS-MPU 사용자 영역. S-MPU 태그 없음 |
+| DMA Cluster | 파란 괄호와 빨간 괄호 안 | 같은 NS-MPU 영역 + S-MPU 영역 1개(TTT 태그) |
+| Secure Guard Block 256B | Cluster 바로 위 | MPCBB Secure. NS 데이터를 두지 않음 |
 
-1. `TTAT`/`TTA`로 NS-MPU를 조회해 `base`와 `base+len-1`을 호출자가 쓸 수 있는지 확인합니다.
-2. `TTT`로 양 끝점의 S-MPU 영역을 조회해 둘 다 유효하고 같은 영역인지 확인합니다. 그러면 전 범위가 Cluster 안입니다.
-3. 통과하면 DMA를 NS 트랜잭션으로 설정해 시작합니다. 그래야 가드 블록이 적용됩니다.
+**요청 시점 검증: Secure DMA 중재자 (§3.2).** DMA 컨트롤러와 채널은 Secure에 두어 NS 코드가 직접 설정할 수 없습니다. 태스크의 요청 `(base, len)`은 NSC 진입점에서 다음과 같이 검사합니다.
 
-검증 비용은 등록 버퍼 수와 무관하게 TTT 2회지만, 태그 수는 S-MPU 영역 수(8개)로 제한됩니다.
+| 그림 | 동작 |
+|---|---|
+| (1) NS-MPU 영역 검증 | `TTAT`/`TTA`로 NS-MPU를 조회해 `base`와 `base+len-1`을 호출자가 쓸 수 있는지 확인합니다 |
+| (2) S-MPU 태그 검사 | `TTT`로 양 끝점의 S-MPU 영역을 조회해 둘 다 유효하고 같은 영역인지 확인합니다. 그러면 전 범위가 Cluster 안입니다 |
+| (3) DMA 전송 설정 | 통과하면 DMA를 NS 트랜잭션으로 설정합니다. 그래야 가드 블록이 적용됩니다 |
 
-**전송 시점 보호: MPCBB 가드 블록 (§3.3).** 경계를 넘은 NS DMA가 가드 블록에 닿으면 TZIC 인터럽트가 발생하고, 핸들러가 DMA 채널을 중단합니다.
+(1)만으로는 같은 NS-MPU 영역에 있는 Task data를 구분할 수 없고, (2)가 이를 걸러 냅니다. 검증 비용은 등록 버퍼 수와 무관하게 TTT 2회지만, 태그 수는 S-MPU 영역 수(8개)로 제한됩니다.
+
+**전송 시점 보호: MPCBB 가드 블록 (§3.3).** 요청 시점 검증은 인자만 볼 수 있으므로, 전송 중 경계 초과는 다음 순서로 막습니다.
+
+| 그림 | 동작 |
+|---|---|
+| (a) | 중재자가 DMA 레지스터를 설정합니다 |
+| (b) | DMA가 Cluster로 전송합니다. 결함이 있으면 경계를 넘습니다 (빨간 점선) |
+| (c) | NS 트랜잭션이 Secure 가드 블록에 닿아 MPCBB가 위반을 감지합니다 |
+| (d) | TZIC 인터럽트가 발생합니다 |
+| (e) | 핸들러가 DMA 채널을 중단합니다 |
 
 **한계 (§5).** 태스크당 가드 블록 256B와 S-MPU 영역 1개를 추가로 씁니다. S-MPU가 부족한 환경에서는 Flash 테이블 방식으로 대체해야 합니다. NS-MPU 영역은 추가로 쓰지 않습니다.
 
@@ -70,6 +96,17 @@ S-MPU 태그 방식이 테이블 방식보다 평균 63 사이클(약 28%) 빠�
 | 소스 버퍼 검증 | 목적지만 검증 |
 | 애플리케이션 | M2M DMA 태스크 2개 + DMA 미사용 태스크 1개 |
 
+**그림 2와 코드의 대응**
+
+| 그림 | 코드 |
+|---|---|
+| Task 1, Task 2 | `DMA_Task_A`, `DMA_Task_B` (`NonSecure/Src/app_freertos.c`) |
+| Task data, Cluster, Guard Block | `s_dmaTaskMem[]`의 `globals`, `cluster`, `guard` |
+| (1), (2) | `verify_inst()` (`Secure/Src/secure_nsc.c`) |
+| (3), (a) | `SECURE_dma_m2m_start()` (`Secure/Src/secure_nsc.c`) |
+| S-MPU 태그, MPCBB 가드 설정 | `SMPU_SetupTaskRegions()` (`Secure/Src/main.c`) |
+| (d), (e) | `GTZC_IRQHandler()` (`Secure/Src/secure_nsc.c`) |
+
 **알려진 문제 (미수정)**
 - Task B의 Secure 하드코딩 주소(0x2001c000)가 실제 Cluster(0x2001ba00)와 달라 B의 요청은 전부 거부됩니다. 평가는 Task A만 대상으로 합니다.
 - `GTZC_IRQHandler`가 `s_busy`를 지우지 않고 콜백도 부르지 않습니다 [코드, 보드 미검증].
@@ -81,6 +118,17 @@ S-MPU 태그 방식이 테이블 방식보다 평균 63 사이클(약 28%) 빠�
 
 ### 중재자 사이클
 8바이트 M2M, N=1000, Task A, DMA IRQ 차단. 값은 min / avg / max이고, max는 1ms 틱 인터럽트가 끼어든 표본입니다. 전체 표와 정의는 [`results/report.md`](results/report.md)에 있습니다.
+
+측정 구간은 그림 2의 (1)~(3)과 (a)를 포함합니다.
+
+```
+NS   T0 ---- SECURE_dma_m2m_start() 호출 ----------------------------- T5
+S          SG, prologue | T1 인자 확인, verify_inst, 레지스터, EN T4 | 복귀, FP 클리어
+
+start()~리턴 = T5 - T0
+내부         = T4 - T1 (기록 비용 제외)
+verify_inst  = 호출 전후 측정 (판독 비용 제외, BL/BX 포함)
+```
 
 | 조건 | `start()`~리턴 | 내부 (NSC 제외) | `verify_inst` | 빈 NSC |
 |---|---|---|---|---|
@@ -163,6 +211,7 @@ Drivers/                                  CMSIS, HAL, BSP
 scripts/eval/                             빌드, 측정, 집계
 results/                                  측정 결과와 보고서
 docs/                                     논문, gap 분석, 변경 이력, D-Box 기준값
+docs/paper/figures/                       README에 쓰는 논문 그림 (paper.pdf에서 300dpi로 추출)
 ```
 
 | 문서 | 내용 |
