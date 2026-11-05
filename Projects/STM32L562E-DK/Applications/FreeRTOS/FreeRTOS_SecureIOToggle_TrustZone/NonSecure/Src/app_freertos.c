@@ -177,8 +177,17 @@ static SemaphoreHandle_t s_dmaChannelMutex;
  * 채널은 mutex 로 한 번에 한 태스크만 쓰고, 각 태스크는 mutex 를 잡은 뒤 자기 dmaDone 을
  * 0 으로 지우고 시작하므로 소유자가 아닌 태스크의 플래그가 1 이 되어도 영향이 없다.
  * (Secure IRQ 우선순위에서 실행되므로 FreeRTOS API 는 호출하지 않는다.) */
+#if defined(BENCH_PHASE) && defined(BENCH_TS)
+#define BENCH_NS_CB()        (*(volatile uint32_t *)0x2003FF00u = DWT->CYCCNT)
+#define BENCH_NS_CB_VALUE()  (*(volatile uint32_t *)0x2003FF00u)
+#else
+#define BENCH_NS_CB()        ((void)0)
+#define BENCH_NS_CB_VALUE()  (0u)
+#endif
+
 static void App_DmaDoneCallback(uint32_t status)
 {
+    BENCH_NS_CB();
     for (uint32_t i = 0; i < DMA_TASK_NUM; i++)
     {
         s_dmaTaskMem[i].globals.v.dmaStatus = (uint8_t)status;
@@ -327,6 +336,10 @@ static void AttackScenario_OverflowAfterVerify_TaskA(void)
 }
 #endif
 
+#ifdef BENCH_PHASE
+#include "bench_ns.inc"
+#endif
+
 /* Task 스택. 포트 요구에 따라 정렬 중요. */
 #define STACK_SIZE_WORDS 256
 static StackType_t xDmaTaskAStack[ STACK_SIZE_WORDS ] __attribute__((aligned(32)));
@@ -342,7 +355,9 @@ static void vDmaTaskA( void *pvParameters )
 
   dma_task_globals_t *g = &s_dmaTaskMem[DMA_TASK_A].globals.v;
 
-#if DMA_BENCH_ENABLE
+#if defined(BENCH_PHASE)
+  Bench_Main();
+#elif DMA_BENCH_ENABLE
   DmaTask_RunBenchmark(s_dmaSrcA, s_dmaTaskMem[DMA_TASK_A].cluster.dst, g);
 #endif
 
@@ -475,7 +490,15 @@ void vCreateAppTasks( void )
    * xSemaphoreTake/Give 가 MPU wrapper 에서 즉시 pdFAIL 로 끝난다. */
   vGrantAccessToSemaphore( hDmaTaskA, s_dmaChannelMutex );
   vGrantAccessToSemaphore( hDmaTaskB, s_dmaChannelMutex );
+#if defined(BENCH_PHASE)
+  /* EVAL: Task A 만 측정한다. .bss 배치를 유지하려고 생성은 그대로 하고 B/Plain 은 재운다. */
+  TaskHandle_t hPlainTask = NULL;
+  xTaskCreateRestricted( &xPlainTaskParams, &hPlainTask );
+  vTaskSuspend( hDmaTaskB );
+  vTaskSuspend( hPlainTask );
+#else
   xTaskCreateRestricted( &xPlainTaskParams, NULL );
+#endif
 }
 
 /* USER CODE END Application */

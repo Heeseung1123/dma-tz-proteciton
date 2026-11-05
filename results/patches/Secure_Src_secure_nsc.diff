@@ -1,0 +1,65 @@
+--- project/Secure/Src/secure_nsc.c_bak	2026-11-05 10:59:29.377648503 +0900
++++ project/Secure/Src/secure_nsc.c	2026-11-05 10:59:29.773648852 +0900
+@@ -126,6 +126,14 @@
+ #include "stm32l5xx.h"
+ #include <arm_cmse.h>
+ 
++/* EVAL 계측 훅 (BENCH_TS 일 때만 코드 생성, 기본 빌드에서는 빈 매크로) */
++#if defined(BENCH_PHASE) && defined(BENCH_TS)
++extern volatile uint32_t *g_bCur;
++#define BENCH_T(k)  (g_bCur[(k)] = DWT->CYCCNT)
++#else
++#define BENCH_T(k)  ((void)0)
++#endif
++
+ #define DMA_CH        DMA1_Channel1
+ #define DMA_CH_IRQn   DMA1_Channel1_IRQn
+ 
+@@ -303,9 +311,11 @@
+ int SECURE_dma_m2m_start(void *src_buf, void *dst_buf, uint32_t len)
+ 
+ {
++    BENCH_T(1);
+     if (len == 0 || s_busy) return -1;
+     uint32_t a = (uint32_t)(uintptr_t)dst_buf; 
+     if (!verify_inst(a, len)) return -1;
++    BENCH_T(2);
+ 
+     s_busy = 1;
+ 
+@@ -314,7 +324,9 @@
+     DMA_CH->CM0AR  = (uint32_t)dst_buf;
+     DMA_CH->CNDTR = len;             
+     DMA1->IFCR    = DMA_IFCR_CGIF1;
++    BENCH_T(3);
+     DMA_CH->CCR  |= DMA_CCR_EN;      
++    BENCH_T(4);
+ 
+     return 0;
+ }
+@@ -327,6 +339,7 @@
+ 
+ void DMA1_Channel1_IRQHandler(void)
+ {
++    BENCH_T(5);
+     uint32_t isr = DMA1->ISR;
+     uint32_t status;
+ 
+@@ -343,7 +356,9 @@
+     DMA1->IFCR   = DMA_IFCR_CGIF1;
+     s_busy = 0;
+ 
++    BENCH_T(6);
+     if (s_ns_callback) s_ns_callback(status);
++    BENCH_T(7);
+ }
+ 
+ void GTZC_IRQHandler(void)
+@@ -355,3 +370,7 @@
+     __DSB();
+ 
+ }
++
++#ifdef BENCH_PHASE
++#include "bench_s.inc"
++#endif

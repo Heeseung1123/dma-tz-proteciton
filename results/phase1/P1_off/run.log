@@ -1,0 +1,9 @@
+ok id=1 n=1000 arg=0
+ok id=2 n=1000 arg=0
+ok id=10 n=100 arg=0
+ok id=20 n=100 arg=0
+ok id=11 n=100 arg=0
+ok id=21 n=100 arg=0
+ok id=12 n=100 arg=0
+ok id=22 n=100 arg=0
+done
