@@ -60,16 +60,6 @@ static void Secure_DMA_LockAllChannels(void);
 static void Secure_TZIC_Init(void);
 static void SMPU_SetupTaskRegions(void);
 
-/* EVAL 부팅 비용 계측 (BENCH_PHASE==4 일 때만) */
-#if defined(BENCH_PHASE) && (BENCH_PHASE == 4)
-extern volatile uint32_t g_bBoot[10];
-#define BENCH_BOOT_START() do { CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk; DWT->CYCCNT = 0; DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk; } while (0)
-#define BENCH_BOOT(i)      (g_bBoot[(i)] = DWT->CYCCNT)
-#else
-#define BENCH_BOOT_START() ((void)0)
-#define BENCH_BOOT(i)      ((void)0)
-#endif
-
 
 /* USER CODE BEGIN PFP */
 
@@ -103,10 +93,7 @@ int main(void)
   /* USER CODE END Init */
 
   /* GTZC initialisation */
-  BENCH_BOOT_START();
-  BENCH_BOOT(0);
   MX_GTZC_S_Init();
-  BENCH_BOOT(1);
 
   /* USER CODE BEGIN SysInit */
 
@@ -142,11 +129,8 @@ int main(void)
   HAL_GPIO_ConfigPinAttributes(GPIOG, (GPIO_PIN_All & ~(GPIO_PIN_12)), GPIO_PIN_NSEC);
   HAL_GPIO_ConfigPinAttributes(GPIOH, GPIO_PIN_All, GPIO_PIN_NSEC);
 
-  BENCH_BOOT(2);
   Secure_DMA_LockAllChannels();
-  BENCH_BOOT(3);
   Secure_TZIC_Init();
-  BENCH_BOOT(4);
 
   /* Leave the GPIO clocks enabled to let non-secure having I/Os control */
 
@@ -161,9 +145,7 @@ int main(void)
 
   /*************** Setup and jump to non-secure *******************************/
 
-  BENCH_BOOT(5);
   SMPU_SetupTaskRegions();
-  BENCH_BOOT(6);
   NonSecure_Init();
 
   /* Non-secure software does not return, this code is not executed */
@@ -358,14 +340,6 @@ static void Secure_DMA_LockAllChannels(void)
         DMA_Channel_TypeDef *pChannel = (DMA_Channel_TypeDef *)
             (DMA1_Channel1_BASE + ch * (DMA1_Channel2_BASE - DMA1_Channel1_BASE));
 
-#if defined(BENCH_INSECURE_DMA)
-        /* EVAL Phase 5 baseline 전용: DMA1_Channel2 만 NS 에 개방 (기본 빌드에는 없음) */
-        if (ch == 1u)
-        {
-            NVIC_SetTargetState(DMA1_Channel2_IRQn);
-            continue;
-        }
-#endif
         pChannel->CCR |= DMA_CCR_SECM;
         pChannel->CCR &= ~(DMA_CCR_SSEC | DMA_CCR_DSEC);
     }

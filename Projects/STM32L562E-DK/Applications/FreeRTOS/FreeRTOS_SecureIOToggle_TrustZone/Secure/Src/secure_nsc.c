@@ -126,12 +126,14 @@ CMSE_NS_ENTRY uint32_t SECURE_dma_buffer_request(uint32_t len)
 #include "stm32l5xx.h"
 #include <arm_cmse.h>
 
-/* EVAL 계측 훅 (BENCH_TS 일 때만 코드 생성, 기본 빌드에서는 빈 매크로) */
+/* 중재자 사이클 측정 훅 (BENCH_TS 빌드에서만 코드 생성, bench_s.inc 참고) */
 #if defined(BENCH_PHASE) && defined(BENCH_TS)
-extern volatile uint32_t *g_bCur;
-#define BENCH_T(k)  (g_bCur[(k)] = DWT->CYCCNT)
+extern volatile uint32_t g_benchT1, g_benchT4;
+#define BENCH_T1()  (g_benchT1 = DWT->CYCCNT)
+#define BENCH_T4()  (g_benchT4 = DWT->CYCCNT)
 #else
-#define BENCH_T(k)  ((void)0)
+#define BENCH_T1()  ((void)0)
+#define BENCH_T4()  ((void)0)
 #endif
 
 #define DMA_CH        DMA1_Channel1
@@ -311,11 +313,10 @@ secureportNON_SECURE_CALLABLE
 int SECURE_dma_m2m_start(void *src_buf, void *dst_buf, uint32_t len)
 
 {
-    BENCH_T(1);
+    BENCH_T1();
     if (len == 0 || s_busy) return -1;
     uint32_t a = (uint32_t)(uintptr_t)dst_buf; 
     if (!verify_inst(a, len)) return -1;
-    BENCH_T(2);
 
     s_busy = 1;
 
@@ -324,9 +325,8 @@ int SECURE_dma_m2m_start(void *src_buf, void *dst_buf, uint32_t len)
     DMA_CH->CM0AR  = (uint32_t)dst_buf;
     DMA_CH->CNDTR = len;             
     DMA1->IFCR    = DMA_IFCR_CGIF1;
-    BENCH_T(3);
     DMA_CH->CCR  |= DMA_CCR_EN;      
-    BENCH_T(4);
+    BENCH_T4();
 
     return 0;
 }
@@ -339,7 +339,6 @@ int SECURE_nop3(void *a, void *b, uint32_t c)
 
 void DMA1_Channel1_IRQHandler(void)
 {
-    BENCH_T(5);
     uint32_t isr = DMA1->ISR;
     uint32_t status;
 
@@ -356,9 +355,7 @@ void DMA1_Channel1_IRQHandler(void)
     DMA1->IFCR   = DMA_IFCR_CGIF1;
     s_busy = 0;
 
-    BENCH_T(6);
     if (s_ns_callback) s_ns_callback(status);
-    BENCH_T(7);
 }
 
 void GTZC_IRQHandler(void)

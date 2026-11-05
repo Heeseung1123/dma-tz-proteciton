@@ -177,17 +177,8 @@ static SemaphoreHandle_t s_dmaChannelMutex;
  * 채널은 mutex 로 한 번에 한 태스크만 쓰고, 각 태스크는 mutex 를 잡은 뒤 자기 dmaDone 을
  * 0 으로 지우고 시작하므로 소유자가 아닌 태스크의 플래그가 1 이 되어도 영향이 없다.
  * (Secure IRQ 우선순위에서 실행되므로 FreeRTOS API 는 호출하지 않는다.) */
-#if defined(BENCH_PHASE) && defined(BENCH_TS)
-#define BENCH_NS_CB()        (*(volatile uint32_t *)0x2003FF00u = DWT->CYCCNT)
-#define BENCH_NS_CB_VALUE()  (*(volatile uint32_t *)0x2003FF00u)
-#else
-#define BENCH_NS_CB()        ((void)0)
-#define BENCH_NS_CB_VALUE()  (0u)
-#endif
-
 static void App_DmaDoneCallback(uint32_t status)
 {
-    BENCH_NS_CB();
     for (uint32_t i = 0; i < DMA_TASK_NUM; i++)
     {
         s_dmaTaskMem[i].globals.v.dmaStatus = (uint8_t)status;

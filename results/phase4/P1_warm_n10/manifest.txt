@@ -1,8 +1,0 @@
-variant=P1_warm_n10 profile=P1 S=-O0 NS=-O1 defs=[ -DBENCH_PHASE=4 -DBENCH_N=10 -DBENCH_ICACHE]
-git=de0456613c3f5ff80caad4024ee540bb3b90dd16 dirty= M Projects/STM32L562E-DK/Applications/FreeRTOS/FreeRTOS_SecureIOToggle_TrustZone/NonSecure/Src/app_freertos.c; M Projects/STM32L562E-DK/Applications/FreeRTOS/FreeRTOS_SecureIOToggle_TrustZone/NonSecure/Src/main.c; M Projects/STM32L562E-DK/Applications/FreeRTOS/FreeRTOS_SecureIOToggle_TrustZone/Secure/Src/main.c; M Projects/STM32L562E-DK/Applications/FreeRTOS/FreeRTOS_SecureIOToggle_TrustZone/Secure/Src/secure_nsc.c;
-arm-none-eabi-gcc (GNU Tools for STM32 14.3.rel1.20251027-0700) 14.3.1 20250623
-3b3c319471a2596da6d64dc74453ff119d13479a2b23898c9989c10aa1026b85  FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf
-8f7f025a1adacf2fe331b161084863bf2a6191282ec2ce3750624b19fffe11bf  FreeRTOS_SecureIOToggle_TrustZone_Secure.elf
-   text	   data	    bss	    dec	    hex	filename
-  36184	  10240	  12624	  59048	   e6a8	results/phase4/P1_warm_n10/FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf
-  23672	     48	  12360	  36080	   8cf0	results/phase4/P1_warm_n10/FreeRTOS_SecureIOToggle_TrustZone_Secure.elf
