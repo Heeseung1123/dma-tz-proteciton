@@ -21,3 +21,4 @@
 | (이 커밋) | results/phase4, results/phase5, results/summary_phase45.md, results/phase4_rest.log | EVAL Phase 4, 5: D-Box 동형 micro(N=10/1000, 32MHz 포함)와 M2M macro(Pool/Insecure/제안, 1~256B) | §4 | 측정만 | 보드 실측. P0, 주변장치 미측정 |
 | (이 커밋) | results/report.md, results/phase8, docs/gap-analysis.md | EVAL Phase 8: D-Box 비교 보고서, 차이 원인과 절감 후보, 논문 표 2 조건 차이 기록 | §4 | 문서 | 수치는 CSV 기준. P0, 비연결 측정 미완료 |
 | (이 커밋) | Secure/Src/{secure_nsc.c,main.c,bench_s.inc}, NonSecure/Src/{app_freertos.c,bench_ns.inc}, scripts/eval/*, results/*, docs/{dbox_reference.md,gap-analysis.md} | 측정을 T1·T4, DMA IRQ 차단 기준으로 단순화해 재측정(P1/P2 x 110/32MHz x off/warm/cold). context switch·macro·부팅·insecure DMA 하니스와 이전 결과 삭제(983a749 에서 복구 가능). 논문 160 관련 기록 정정 | §4 | 기존 계측 수정·삭제 | 보드 실측. 기본 빌드는 9679590 과 디스어셈블 동일, 828/841 재현. P0·비연결 미측정 |
+| (이 커밋) | README.md | 프로젝트 README: 논문 요약, 구현 상태, 측정 결과, 빌드와 재현 방법 | 전체 | 문서 신규 | 수치는 results/report.md 및 983a749 결과 기준 |
