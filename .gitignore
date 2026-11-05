@@ -21,3 +21,4 @@
 results/**/*.list
 results/**/*.bin
 results/**/build.log
+__pycache__/
