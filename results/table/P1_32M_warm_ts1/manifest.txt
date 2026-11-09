@@ -1,0 +1,8 @@
+variant=P1_32M_warm_ts1 profile=P1 S=-O0 NS=-O1 defs=[ -DBENCH_PHASE=1 -DBENCH_CLK_32M -DBENCH_ICACHE -DBENCH_TS]
+git=6530b8c9231b6b644d45f493667796546f785f42 dirty=
+arm-none-eabi-gcc (GNU Tools for STM32 14.3.rel1.20251027-0700) 14.3.1 20250623
+1671fd3f41fd2863bcd026ecd4438bd0179d03d0b3a9551e358a08b943da50f4  FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf
+ff7cd0ff7d19f5fda836857060d05f3a121a282e68f5d8715793f0ec830b8779  FreeRTOS_SecureIOToggle_TrustZone_Secure.elf
+   text	   data	    bss	    dec	    hex	filename
+  35704	  10240	  12624	  58568	   e4c8	results/table/P1_32M_warm_ts1/FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf
+  12856	     40	  11992	  24888	   6138	results/table/P1_32M_warm_ts1/FreeRTOS_SecureIOToggle_TrustZone_Secure.elf
