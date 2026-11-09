@@ -187,91 +187,14 @@ static void App_DmaDoneCallback(uint32_t status)
 }
 
 #define DMA_BENCH_XFER_LEN   8u
-#define DMA_BENCH_ITERS      32u
-
-/* 사이클 측정(논문 §4, 표 2) 스위치.
- * DWT->CYCCNT 는 PPB(0xE0001004)에 있어 비특권 접근 시 BusFault 가 나므로
- * (NS-MPU 로 허용 불가) [아키텍처 도출], 측정할 때는 DMA 태스크를 특권
- * (portPRIVILEGE_BIT)으로 만든다. NS-MPU 영역 구성(xRegions)은 그대로이고,
- * verify_inst() 는 호출자 권한과 무관하게 TTAT(비특권 기준)로 조회하므로
- * 중재자 판정과 경로 비용은 비특권 호출과 같다 [아키텍처 도출].
- * 표 2 와 같은 NS->NS 왕복(SG/BXNS 상태 전환 포함) 기준이다.
- *   1: DMA 태스크 특권 + 벤치마크 실행
- *   0: DMA 태스크 비특권(격리 실증) + 벤치마크 생략 */
-#ifndef DMA_BENCH_ENABLE
-#define DMA_BENCH_ENABLE     1
-#endif
-
-#if DMA_BENCH_ENABLE
+/* DWT->CYCCNT 는 PPB 에 있어 비특권 접근 시 BusFault [아키텍처 도출].
+ * BENCH_PHASE 빌드(bench_ns.inc 의 Bench_Main)에서만 DMA 태스크를 특권으로 만든다.
+ * 기본 빌드는 비특권(격리 실증). */
+#if defined(BENCH_PHASE)
 #define DMA_TASK_PRIV_BIT    portPRIVILEGE_BIT
 #else
 #define DMA_TASK_PRIV_BIT    0u
 #endif
-
-#if DMA_BENCH_ENABLE
-
-static void DmaTask_RunBenchmark(uint8_t *srcBuf, uint8_t *dstBuf, dma_task_globals_t *g)
-{
-    volatile cycle_stat_t *medStat = &g->statMediator;
-    volatile cycle_stat_t *rtStat  = &g->statRoundtrip;
-    uint32_t medMin = 0xFFFFFFFFu, medMax = 0u, medSum = 0u;
-    uint32_t rtMin  = 0xFFFFFFFFu, rtMax  = 0u, rtSum  = 0u;
-    uint32_t okCount = 0u;
-
-    medStat->min = 0xFFFFFFFFu; medStat->max = 0u; medStat->avg = 0u;
-    rtStat->min  = 0xFFFFFFFFu; rtStat->max  = 0u; rtStat->avg  = 0u;
-
-    /* 캐시 워밍 (논문 §4 "캐시가 채워진 상태"): 측정 전 더미 전송 1회 */
-    xSemaphoreTake(g->dmaMutex, portMAX_DELAY);
-    g->dmaDone = 0;
-    if (SECURE_dma_m2m_start(srcBuf, dstBuf, DMA_BENCH_XFER_LEN) == 0)
-    {
-        while (!g->dmaDone) { }   /* 거부 시 콜백이 오지 않으므로 대기하지 않는다 */
-    }
-    xSemaphoreGive(g->dmaMutex);
-
-    for (uint32_t i = 0; i < DMA_BENCH_ITERS; i++)
-    {
-        xSemaphoreTake(g->dmaMutex, portMAX_DELAY);
-        g->dmaDone = 0;
-
-        __DSB(); __ISB();
-        uint32_t t0 = DWT->CYCCNT;
-        int r = SECURE_dma_m2m_start(srcBuf, dstBuf, DMA_BENCH_XFER_LEN);
-        __DSB();
-        uint32_t t1 = DWT->CYCCNT;   /* 중재자 호출(검증 + 레지스터 설정) 1회 비용 */
-
-        if (r != 0)
-        {
-            /* 채널이 사용 중이거나 검증이 거부됨: 이번 회차는 통계에서 제외 */
-            xSemaphoreGive(g->dmaMutex);
-            continue;
-        }
-
-        while (!g->dmaDone) { }
-        uint32_t t2 = DWT->CYCCNT;   /* 전송 + Secure ISR 까지 포함한 왕복 비용 */
-        xSemaphoreGive(g->dmaMutex);
-
-        uint32_t dMed = t1 - t0;
-        uint32_t dRt  = t2 - t0;
-
-        if (dMed < medMin) medMin = dMed;
-        if (dMed > medMax) medMax = dMed;
-        medSum += dMed;
-
-        if (dRt < rtMin) rtMin = dRt;
-        if (dRt > rtMax) rtMax = dRt;
-        rtSum += dRt;
-        okCount++;
-    }
-
-    if (okCount > 0u)
-    {
-        medStat->min = medMin; medStat->max = medMax; medStat->avg = medSum / okCount;
-        rtStat->min  = rtMin;  rtStat->max  = rtMax;  rtStat->avg  = rtSum  / okCount;
-    }
-}
-#endif /* DMA_BENCH_ENABLE */
 
 #if 0
 /* ---------------------------------------------------------------------------
@@ -348,8 +271,6 @@ static void vDmaTaskA( void *pvParameters )
 
 #if defined(BENCH_PHASE)
   Bench_Main();
-#elif DMA_BENCH_ENABLE
-  DmaTask_RunBenchmark(s_dmaSrcA, s_dmaTaskMem[DMA_TASK_A].cluster.dst, g);
 #endif
 
   for( ;; )
@@ -374,10 +295,6 @@ static void vDmaTaskB( void *pvParameters )
   for (uint32_t i = 0; i < sizeof(s_dmaSrcB); i++) { s_dmaSrcB[i] = (uint8_t)i; }
 
   dma_task_globals_t *g = &s_dmaTaskMem[DMA_TASK_B].globals.v;
-
-#if DMA_BENCH_ENABLE
-  DmaTask_RunBenchmark(s_dmaSrcB, s_dmaTaskMem[DMA_TASK_B].cluster.dst, g);
-#endif
 
   for( ;; )
   {
@@ -417,7 +334,7 @@ static const TaskParameters_t xDmaTaskAParams =
   .pcName = "DMA_Task_A",
   .usStackDepth = STACK_SIZE_WORDS,
   .pvParameters = NULL,
-  .uxPriority =  (tskIDLE_PRIORITY + 1 ) | DMA_TASK_PRIV_BIT,   /* DMA_BENCH_ENABLE 참고 */
+  .uxPriority =  (tskIDLE_PRIORITY + 1 ) | DMA_TASK_PRIV_BIT,   /* DMA_TASK_PRIV_BIT 참고 */
   .puxStackBuffer = xDmaTaskAStack,
   .xRegions =
   {
@@ -437,7 +354,7 @@ static const TaskParameters_t xDmaTaskBParams =
   .pcName = "DMA_Task_B",
   .usStackDepth = STACK_SIZE_WORDS,
   .pvParameters = NULL,
-  .uxPriority =  (tskIDLE_PRIORITY + 1 ) | DMA_TASK_PRIV_BIT,   /* DMA_BENCH_ENABLE 참고 */
+  .uxPriority =  (tskIDLE_PRIORITY + 1 ) | DMA_TASK_PRIV_BIT,   /* DMA_TASK_PRIV_BIT 참고 */
   .puxStackBuffer = xDmaTaskBStack,
   .xRegions =
   {
