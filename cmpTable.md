@@ -182,3 +182,16 @@ python3 scripts/eval/analyze_table.py > results/table/summary.md
 python3 scripts/eval/analyze_table.py results/table_best > results/table_best/summary.md
 python3 scripts/eval/analyze_table.py --best      # §3.4 표 (끝부분)
 ```
+## 7. code comparison
+verifying by using flash-stored table 
+
+table structure 
+<img width="1674" height="425" alt="image" src="https://github.com/user-attachments/assets/69a54ea2-ad7b-416d-97de-0beea6226a48" />
+verifying code 
+<img width="779" height="623" alt="image" src="https://github.com/user-attachments/assets/93dcc156-f048-4eab-82c4-4f75d849dccd" />
+<img width="1618" height="388" alt="image" src="https://github.com/user-attachments/assets/b3841baa-a9ea-42c6-8418-fe39ab6a2812" />
+
+
+verifying by using TTT Instruction 
+<img width="767" height="758" alt="image" src="https://github.com/user-attachments/assets/1a0f6996-30aa-4fff-971d-95f33a6c6783" />
+
