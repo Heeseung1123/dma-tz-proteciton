@@ -315,12 +315,22 @@ typedef struct {
     uint32_t size;     /* 0 = empty entry */
 } dma_tbl_ent_t;
 
+#if defined(BENCH_TBL_BEST)
+/* Best case for the bench (cmpTable.md): Task A Cluster at entry 0 -> hit on the first iteration. */
+const dma_tbl_ent_t g_dma_tbl[DMA_TBL_N] = {
+    { 0x2001b700u, 0x100u },   /* 0: Task A Cluster */
+    { 0x2001c000u, 0x100u },   /* 1: Task B Cluster */
+    { 0u, 0u }, { 0u, 0u }, { 0u, 0u },
+    { 0u, 0u }, { 0u, 0u }, { 0u, 0u },
+};
+#else
 const dma_tbl_ent_t g_dma_tbl[DMA_TBL_N] = {
     { 0u, 0u }, { 0u, 0u }, { 0u, 0u },
     { 0u, 0u }, { 0u, 0u }, { 0u, 0u },
     { 0x2001c000u, 0x100u },   /* 6: Task B Cluster (main.c DMA_TASK_B_CLUSTER_*) */
     { 0x2001b700u, 0x100u },   /* 7: Task A Cluster (main.c DMA_TASK_A_CLUSTER_*) */
 };
+#endif
 
 /* Table search only. Reached by tail call from verify_table (r0 = addr, r1 = len). */
 __attribute__((noinline, used))
