@@ -24,3 +24,4 @@
 | (이 커밋) | README.md | 프로젝트 README: 논문 요약, 구현 상태, 측정 결과, 빌드와 재현 방법 | 전체 | 문서 신규 | 수치는 results/report.md 및 983a749 결과 기준 |
 | (이 커밋) | README.md, docs/paper/figures/* | README 재작성: 논문 그림 1, 2 추가, 그림 2 라벨 설명과 코드 대응표, 측정 구간도 | 전체 | 문서 수정 | 그림은 paper.pdf 렌더링에서 추출, 육안 확인 |
 | (이 커밋) | NonSecure/Src/{app_freertos.c,bench_ns.inc}, app_freertos.c_bak_dmaBench | DMA_BENCH_ENABLE 구간과 DmaTask_RunBenchmark() 삭제(원본은 _bak_dmaBench). DMA 태스크 특권 비트는 BENCH_PHASE 일 때만 설정. bench_ns.inc 에 측정 항목별 설명과 바깥/안쪽 계산법 주석 추가(코드 변경 없음) | §4 | 기존 코드 삭제·주석 | 빌드 확인(기본, BENCH_PHASE+BENCH_TS). 보드 측정은 다음 커밋 |
+| (이 커밋) | Mediator.md, results/mediator/* | 중재자 사이클 24개 빌드 보드 재측정(P1/P2 x 110/32MHz x off/warm/cold x ts0/ts1), 바깥/안쪽/verify_inst/빈 NSC 표와 report.md(11-05) 대비 비교. Secure ELF 24/24 동일, off·verify_inst 불변, warm·cold 바깥 1~37 감소(NS 배치 변경, 1-way ICACHE 충돌 [추정]) | §4 | 측정 결과 신규 | 보드 실측 N=1000. P0·디버거 비연결 미측정 |
