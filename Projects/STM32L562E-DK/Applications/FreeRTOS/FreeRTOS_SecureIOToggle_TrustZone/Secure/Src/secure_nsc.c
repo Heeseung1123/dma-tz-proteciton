@@ -201,37 +201,9 @@ secureportNON_SECURE_CALLABLE int SECURE_dma_m2m_init(void *ns_cb)
     s_busy = 0;
     return 0;
 }
-typedef struct {
-    uint32_t base;
-    uint32_t size;
-    uint8_t  valid;
-} dma_ent_t;
+/* Table-search verifier (comparison target): see the #if 0 block after SECURE_dma_m2m_start. */
 
-const dma_ent_t g_dma_table[8] = {
-    { 0x20018500u, 0x100u, 1u},
-    { 0x20018600u, 0x100u, 1u},
-    { 0x20018700u, 0x200u, 1u},
-    { 0x20018900u, 0x080u, 1u},
-    { 0, 0, 0 }, { 0, 0, 0 },
-    { 0, 0, 0 }, { 0, 0, 0 },
-};
-
-
-__attribute__((noinline))
-int verify_table(uint32_t addr, uint32_t len)
-{
-    for (uint32_t i = 0u; i < 8u; i++) {
-        const dma_ent_t *e = &g_dma_table[i];
-        if (!e->valid) continue;
-        uint32_t off = addr - e->base;
-        if (off < e->size) {
-            return (len <= e->size - off);   
-        }
-    }
-    return 0;
-}
-
-#if 0 
+#if 0
 __attribute__((naked))
 int verify_inst(uint32_t addr)
 {
@@ -325,11 +297,107 @@ int SECURE_dma_m2m_start(void *src_buf, void *dst_buf, uint32_t len)
     DMA_CH->CM0AR  = (uint32_t)dst_buf;
     DMA_CH->CNDTR = len;             
     DMA1->IFCR    = DMA_IFCR_CGIF1;
-    DMA_CH->CCR  |= DMA_CCR_EN;      
+    DMA_CH->CCR  |= DMA_CCR_EN;
     BENCH_T4();
 
     return 0;
 }
+
+#if 1   /* table-search comparison. 0 = disable (also remove the secure_nsc.h decl and BENCH_TABLE tests) */
+/* Comparison target (paper Table 2): linear search of an 8-entry Flash table instead of the S-MPU tag.
+ * NS-MPU step (TTAT x2) is the same as verify_inst; only the S-MPU tag (TTT x2) is replaced by the table.
+ * Entry 7 = Task A Cluster (worst-case hit).
+ * To enable: #if 1, declare the two NSC functions in secure_nsc.h, call them from bench_ns.inc. */
+#define DMA_TBL_N   8u
+
+typedef struct {
+    uint32_t base;
+    uint32_t size;     /* 0 = empty entry */
+} dma_tbl_ent_t;
+
+const dma_tbl_ent_t g_dma_tbl[DMA_TBL_N] = {
+    { 0u, 0u }, { 0u, 0u }, { 0u, 0u },
+    { 0u, 0u }, { 0u, 0u }, { 0u, 0u },
+    { 0x2001c000u, 0x100u },   /* 6: Task B Cluster (main.c DMA_TASK_B_CLUSTER_*) */
+    { 0x2001b700u, 0x100u },   /* 7: Task A Cluster (main.c DMA_TASK_A_CLUSTER_*) */
+};
+
+/* Table search only. Reached by tail call from verify_table (r0 = addr, r1 = len). */
+__attribute__((noinline, used))
+int verify_table_search(uint32_t addr, uint32_t len)
+{
+    for (uint32_t i = 0u; i < DMA_TBL_N; i++) {
+        const dma_tbl_ent_t *e = &g_dma_tbl[i];
+        uint32_t off = addr - e->base;            /* wraps to a large value if addr < base */
+        if (off < e->size && len <= e->size - off) {
+            return 1;                             /* [addr, addr+len) inside [base, base+size) */
+        }
+    }
+    return 0;
+}
+
+/* Returns 1 = pass, 0 = reject (same as verify_inst).
+ * NS-MPU check = verify_inst's first 9 instructions (SUBS..CBZ), same order and meaning:
+ *   overflow reject, TTAT(base)/TTAT(end) same result (same NS-MPU region),
+ *   readwrite_ok bit19 (NS-MPU, unprivileged write). TT does not report execute permission.
+ * Register difference only: TTAT results go to r3/r2 (verify_inst uses r1/r3) so that
+ * r0 = addr, r1 = len stay intact for the tail call into verify_table_search. */
+__attribute__((naked, noinline))
+int verify_table(uint32_t addr, uint32_t len)
+{
+    __asm volatile (
+        "SUBS   r2, r1, #1              \n"
+        "ADDS   r2, r2, r0              \n"   /* r2 = base+len-1; C = address overflow */
+        "BCS    1f                      \n"
+        "TTAT   r3, r0                  \n"   /* r3 = NS-MPU(base), unprivileged */
+        "TTAT   r2, r2                  \n"   /* r2 = NS-MPU(end),  unprivileged */
+        "CMP    r3, r2                  \n"
+        "BNE    1f                      \n"
+        "UBFX   r3, r2, #19, #1         \n"   /* readwrite_ok */
+        "CBZ    r3, 1f                  \n"
+        "B      verify_table_search     \n"   /* tail call: r0, r1, lr unchanged */
+        "1:                             \n"
+        "MOVS   r0, #0                  \n"
+        "BX     lr                      \n"
+    );
+}
+
+/* Same as SECURE_dma_m2m_start, with verify_inst replaced by verify_table. */
+secureportNON_SECURE_CALLABLE
+int SECURE_dma_m2m_start_table(void *src_buf, void *dst_buf, uint32_t len)
+{
+    BENCH_T1();
+    if (len == 0 || s_busy) return -1;
+    uint32_t a = (uint32_t)(uintptr_t)dst_buf;
+    if (!verify_table(a, len)) return -1;
+
+    s_busy = 1;
+
+    DMA_CH->CCR  &= ~DMA_CCR_EN;
+    DMA_CH->CPAR  = (uint32_t)src_buf;
+    DMA_CH->CM0AR  = (uint32_t)dst_buf;
+    DMA_CH->CNDTR = len;
+    DMA1->IFCR    = DMA_IFCR_CGIF1;
+    DMA_CH->CCR  |= DMA_CCR_EN;
+    BENCH_T4();
+
+    return 0;
+}
+
+#if defined(BENCH_PHASE)
+/* verify_table cost only; same read order as SECURE_bench_verify, so subtract VERIFY_CALIB. */
+secureportNON_SECURE_CALLABLE uint32_t SECURE_bench_verify_table(void *dst, uint32_t len)
+{
+    __DSB(); __ISB();
+    uint32_t t0 = DWT->CYCCNT;
+    (void)verify_table((uint32_t)(uintptr_t)dst, len);
+    __DSB();
+    uint32_t t1 = DWT->CYCCNT;
+    return t1 - t0;
+}
+#endif
+
+#endif /* table-search comparison */
 
 secureportNON_SECURE_CALLABLE int SECURE_dma_m2m_busy(void) { return s_busy; }
 

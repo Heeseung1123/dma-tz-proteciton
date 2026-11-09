@@ -5,7 +5,8 @@ d = os.environ['DIR']
 files = {k: [f for f in os.listdir(d) if f.endswith(k + '.elf')][0] for k in ('_NonSecure', '_Secure')}
 HDR, ROWS, COLS = 0x20030000, 0x20030040, 2
 NAMES = {1: ['ns_calib'], 2: ['empty_nsc'], 3: ['start_total', 'inner_t4_t1'],
-         4: ['inner_calib'], 5: ['verify'], 6: ['verify_calib']}
+         4: ['inner_calib'], 5: ['verify'], 6: ['verify_calib'],
+         7: ['start_table_total', 'inner_table_t4_t1'], 8: ['verify_table']}
 gdb.execute('set pagination off'); gdb.execute('set confirm off')
 gdb.execute('file %s/%s' % (d, files['_NonSecure']))
 gdb.execute('target remote localhost:61234')

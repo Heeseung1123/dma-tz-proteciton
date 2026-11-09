@@ -50,6 +50,8 @@ typedef struct { volatile uint32_t magic, id, n; } bench_hdr_t;
 #define BENCH_ID_INNER_CALIB   4u   /* T1, T4 기록 비용 */
 #define BENCH_ID_VERIFY        5u   /* verify_inst */
 #define BENCH_ID_VERIFY_CALIB  6u   /* verify_inst 측정의 판독 비용 */
+#define BENCH_ID_START_TABLE   7u   /* 열: start_table 전체, 내부(T4-T1). START 와 같은 방법 */
+#define BENCH_ID_VERIFY_TABLE  8u   /* verify_table (VERIFY_CALIB 를 뺀다) */
 #define BENCH_ID_END           0xFFu
 
 extern int      SECURE_nop3(void *a, void *b, uint32_t c);
@@ -57,6 +59,7 @@ extern uint32_t SECURE_bench_inner(void);
 extern uint32_t SECURE_bench_inner_calib(void);
 extern uint32_t SECURE_bench_verify(void *dst, uint32_t len);
 extern uint32_t SECURE_bench_verify_calib(void);
+extern uint32_t SECURE_bench_verify_table(void *dst, uint32_t len);
 extern void     SECURE_bench_irq_mask(int mask);
 extern void     SECURE_bench_cold(void);
 
@@ -98,17 +101,22 @@ static inline void bench_before_iter(void)
 
 /* start 1회 측정. 측정 구간 동안 DMA IRQ(NVIC) 를 막아 전송 완료 ISR 과 NS 콜백이 T0-T5 에
  * 섞이지 않게 한다. 막지 않으면 기존 statMediator 828 처럼 ISR 비용이 섞인다.
- * 틱/태스크 선점은 막지 않으므로 max(일부 avg)에는 섞일 수 있다. */
-static void bench_start_once(uint8_t *dst, dma_task_globals_t *g, uint32_t *total)
-{
-    int r;
-    g->dmaDone = 0;
-    SECURE_bench_irq_mask(1);
-    BENCH_MEASURE_NS(*total, r = SECURE_dma_m2m_start(BENCH_SRC, dst, BENCH_LEN));
-    SECURE_bench_irq_mask(0);         /* 여기서 ISR 이 돌아 전송 완료를 처리한다 */
-    configASSERT(r == 0);
-    while (!g->dmaDone) { }
+ * 틱/태스크 선점은 막지 않으므로 max(일부 avg)에는 섞일 수 있다.
+ * start / start_table 두 버전을 같은 매크로로 만들어 호출 대상 외에는 코드가 같게 한다
+ * (함수 포인터 간접 호출을 쓰면 측정 구간 안 명령이 달라지므로 쓰지 않는다). */
+#define BENCH_DEFINE_START_ONCE(name, nsc_fn)                                  \
+static void name(uint8_t *dst, dma_task_globals_t *g, uint32_t *total)         \
+{                                                                              \
+    int r;                                                                     \
+    g->dmaDone = 0;                                                            \
+    SECURE_bench_irq_mask(1);                                                  \
+    BENCH_MEASURE_NS(*total, r = nsc_fn(BENCH_SRC, dst, BENCH_LEN));           \
+    SECURE_bench_irq_mask(0);   /* 여기서 ISR 이 돌아 전송 완료를 처리한다 */   \
+    configASSERT(r == 0);                                                      \
+    while (!g->dmaDone) { }                                                    \
 }
+BENCH_DEFINE_START_ONCE(bench_start_once,       SECURE_dma_m2m_start)
+BENCH_DEFINE_START_ONCE(bench_start_table_once, SECURE_dma_m2m_start_table)
 
 /* DMA_Task_A 가 호출하는 진입점 */
 static void Bench_Main(void)
@@ -185,6 +193,35 @@ static void Bench_Main(void)
         BENCH_ROW(i)[0] = SECURE_bench_verify_calib();
     }
     bench_table_done(BENCH_ID_VERIFY_CALIB);
+
+    /* ---- 테이블 방식 비교 대상 (secure_nsc.c SECURE_dma_m2m_start_table / verify_table) ----
+     * NS-MPU 확인(TTAT x2)은 verify_inst 와 같고, S-MPU 태그(TTT x2) 대신 8항목 Flash 테이블 선형 탐색. dst 는 Task A Cluster = 항목 7 이므로 마지막 항목에서 적중
+     * (최악 적중 경로) [코드]. 보정값은 S-MPU 경로와 공유한다:
+     *   start_table 전체 = ts0 빌드 START_TABLE 열0 - NS_CALIB
+     *   내부            = ts1 빌드 START_TABLE 열1 - INNER_CALIB
+     *   verify_table    = VERIFY_TABLE - VERIFY_CALIB
+     *     (SECURE_bench_verify_table 은 SECURE_bench_verify 와 같은 판독 순서 [코드]) */
+
+    /* 예열: verify_table/start_table 코드와 g_dma_tbl 을 캐시에 올리고 첫 호출 비용 제외 */
+    bench_start_table_once(dst, g, &a);
+
+    /* START_TABLE: 열 의미는 START 와 같다 (start_table 에도 BENCH_T1/T4 가 있다) */
+    for (i = 0; i < BENCH_N; i++)
+    {
+        bench_before_iter();
+        bench_start_table_once(dst, g, &a);
+        BENCH_ROW(i)[0] = a;
+        BENCH_ROW(i)[1] = SECURE_bench_inner();
+    }
+    bench_table_done(BENCH_ID_START_TABLE);
+
+    /* VERIFY_TABLE: Secure 안에서 verify_table 호출 전후를 잰 값 */
+    for (i = 0; i < BENCH_N; i++)
+    {
+        bench_before_iter();
+        BENCH_ROW(i)[0] = SECURE_bench_verify_table(dst, BENCH_LEN);
+    }
+    bench_table_done(BENCH_ID_VERIFY_TABLE);
 
     bench_table_done(BENCH_ID_END);
     for (;;) { vTaskDelay(pdMS_TO_TICKS(1000)); }
