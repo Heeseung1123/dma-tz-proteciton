@@ -55,6 +55,7 @@ void SECURE_LEDToggle(void);
 //int SECURE_guard_buffer(uint32_t, uint32_t);
 //
 int SECURE_dma_m2m_start(void*, void*, uint32_t);
+int SECURE_dma_m2m_start_table(void*, void*, uint32_t);   /* 테이블 방식 비교 대상 (secure_nsc.c) */
 int SECURE_dma_m2m_busy(void);
 int SECURE_dma_m2m_init(void*); 
 int SECURE_nop3(void*, void*, uint32_t);
