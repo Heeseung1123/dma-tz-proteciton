@@ -79,3 +79,12 @@ DMA cluster 부분은 일단 현재로서는 구현하지 않을 것이고, S-MP
 2. **논문 160과의 차이 (정정).** 처음에 "재현 안 됨, 약 37 미설명"으로 기록했으나 측정 코드를 단순화한 재측정에서 바뀌었다. P1 110MHz ICACHE warm, DMA IRQ 차단에서 start 전체 164, 빈 NSC 59다 [실측]. TTAT 몫 약 7(이전 측정)을 빼면 약 157이다 [도출]. 즉 ICACHE on이면 논문 값 근처다. warm 값은 코드 배치에 민감해서 이전 측정은 204였다.
 3. **표 2 경계와 ISR 중첩.** 논문이 8바이트 M2M을 쓰므로 조건에 따라 복귀 전에 ISR이 들어와 경계에 섞인다 [실측]. 논문 측정에 포함되었는지는 미확인이다.
 4. **호출자 권한별 TTA/TTAT.** 논문 §3.2는 특권이면 TTA라고 쓰지만 코드는 TTAT로 고정이다. CLAUDE.md 범위에서 허용된 단순화지만 측정 시 태스크가 특권이므로 기록한다.
+
+## E. DMA 완료 통지: BLXNS 콜백 → NS doorbell IRQ (2026-11-19)
+
+논문 §3 은 요청 시점 검증과 전송 시점 보호(TZIC 중단)만 정하고, 정상 완료를 NS 에 어떻게 알리는지는 정하지 않는다 [논문]. 그래서 충돌은 아니고 논문 밖의 설계 선택이다. 사용자 요청으로 기본 구현을 바꿨다. 상세와 측정 계획은 `cmpISRoverhead.md`.
+
+1. **변경.** 이전(A): Secure `DMA1_Channel1_IRQHandler` 가 NS 함수를 BLXNS 로 호출했다. 이 콜백은 Secure IRQ 문맥이라 FreeRTOS FromISR API 를 쓸 수 없고 Task 는 spin 했다 [도출]. 현재(B): Secure ISR 이 NS 상태 워드에 결과를 쓰고 NS-target IRQ 105 (DFSDM1_FLT3, 미사용)를 pend 한다. NS doorbell ISR 이 소유 Task 를 notify 한다 [코드]. A 는 `DMA_NOTIFY_BLXNS` 빌드에 비교 대상으로 남겼다.
+2. **가드 위반 중단 경로는 바꾸지 않았다.** `GTZC_IRQHandler` 는 채널만 끄고 doorbell 을 울리지 않으며 `s_busy` 도 풀지 않는다 [코드]. 공격 (b) 에서 B 의 Task 는 `ulTaskNotifyTake(portMAX_DELAY)` 에 영원히 블록된다. 이전 A 에서도 spin 이 끝나지 않았으므로 새 결함은 아니다. 질문: TZIC 중단 시 status=2 로 doorbell 을 울리고 `s_busy=0` 으로 할까? (`AttackScenario_*` 는 `#if 0`.)
+3. **IRQ 자원 1개 추가.** 논문 §5 한계(가드 256B + S-MPU 1개)에 더해 NVIC IRQ 1 개와 NS 상태 워드 4B 를 쓴다 [코드]. 논문 한계 절에는 없다.
+4. **상태 워드 포인터는 NSC 로 바뀔 수 있다.** `SECURE_dma_m2m_init` 는 아무 NS 코드나 다시 부를 수 있다. 호출자 권한의 `cmse_check_address_range` 로 호출자가 쓸 수 있는 NS 주소만 받으므로 Secure 메모리를 쓰게 만들 수는 없다 [도출]. 다만 특권 NS 호출자는 (PRIVDEFENA 로) 가드 블록 주소도 넘길 수 있다. 그러면 Secure ISR 이 가드에 4B 를 쓴다. 가드에는 NS 데이터가 없으므로 영향은 없다고 본다 [추정]. 콜백 포인터를 다시 등록하던 A 와 노출 범위가 같다.

@@ -57,7 +57,11 @@ void SECURE_LEDToggle(void);
 int SECURE_dma_m2m_start(void*, void*, uint32_t);
 int SECURE_dma_m2m_start_table(void*, void*, uint32_t);   /* 테이블 방식 비교 대상 (secure_nsc.c) */
 int SECURE_dma_m2m_busy(void);
-int SECURE_dma_m2m_init(void*); 
+int SECURE_dma_m2m_init(void*);   /* B: NS status word / A (DMA_NOTIFY_BLXNS): NS callback */
+
+/* NS-targeted IRQ the Secure DMA ISR pends on completion (B). Unused peripheral (DFSDM1 FLT3,
+ * IRQ 105, never clocked). The NS handler must be DFSDM1_FLT3_IRQHandler (app_freertos.c). */
+#define SECURE_DMA_DOORBELL_IRQn   DFSDM1_FLT3_IRQn
 int SECURE_nop3(void*, void*, uint32_t);
 #endif /* SECURE_NSC_H */
 /* USER CODE END Non_Secure_CallLib_h */

@@ -139,9 +139,16 @@ extern volatile uint32_t g_benchT1, g_benchT4;
 #define DMA_CH        DMA1_Channel1
 #define DMA_CH_IRQn   DMA1_Channel1_IRQn
 
-//typedef void (*ns_callback_t)(uint32_t status);
+/* DMA completion notification to NS (cmpISRoverhead.md §2).
+ * Default (B, doorbell): the Secure ISR writes the result to an NS status word and pends an
+ *   NS-targeted IRQ (SECURE_DMA_DOORBELL_IRQn, ITNS=1); NS handles it as a real NS interrupt.
+ * DMA_NOTIFY_BLXNS (A, comparison target): the Secure ISR calls an NS function via BLXNS. */
+#if defined(DMA_NOTIFY_BLXNS)
 typedef void (*ns_callback_t)(uint32_t status) __attribute__((cmse_nonsecure_call));
 static ns_callback_t s_ns_callback;
+#else
+static volatile uint32_t *s_ns_status;   /* NS word, checked once in SECURE_dma_m2m_init */
+#endif
 static volatile uint8_t s_busy;
 
 
@@ -183,8 +190,15 @@ static void Secure_TZIC_ArmGuardIrqOnce(void)
     }
 }
 
-secureportNON_SECURE_CALLABLE int SECURE_dma_m2m_init(void *ns_cb)
+/* ns_arg: B = NS status word (uint32_t *), A (DMA_NOTIFY_BLXNS) = NS callback. Returns 0 / -1. */
+secureportNON_SECURE_CALLABLE int SECURE_dma_m2m_init(void *ns_arg)
 {
+#if !defined(DMA_NOTIFY_BLXNS)
+    /* The ISR writes here later, so reject anything the NS caller itself cannot write
+     * (TTA with the caller's privilege; also rejects SAU-Secure addresses). */
+    void *st = cmse_check_address_range(ns_arg, sizeof(uint32_t), CMSE_NONSECURE | CMSE_MPU_READWRITE);
+    if (st == NULL || ((uintptr_t)st & 3u)) return -1;
+#endif
     /* 첫 DMA 전에 TZIC SRAM1IE 를 켠다. CCR(MEM2MEM/TCIE/TEIE) 설정보다 먼저 실행되어야 한다. */
     Secure_TZIC_ArmGuardIrqOnce();
     __HAL_RCC_DMA1_CLK_ENABLE();
@@ -197,7 +211,13 @@ secureportNON_SECURE_CALLABLE int SECURE_dma_m2m_init(void *ns_cb)
                 | DMA_CCR_PL_1                 /* priority high */
                 | DMA_CCR_TCIE | DMA_CCR_TEIE);
 
-    s_ns_callback = (ns_callback_t)cmse_nsfptr_create(ns_cb);
+#if defined(DMA_NOTIFY_BLXNS)
+    s_ns_callback = (ns_callback_t)cmse_nsfptr_create(ns_arg);
+#else
+    s_ns_status = (volatile uint32_t *)st;
+    /* Doorbell targets NS; NS sets its priority and enables it (NVIC bits are WI to NS until ITNS=1) */
+    NVIC_SetTargetState(SECURE_DMA_DOORBELL_IRQn);
+#endif
     s_busy = 0;
     return 0;
 }
@@ -433,7 +453,13 @@ void DMA1_Channel1_IRQHandler(void)
     DMA1->IFCR   = DMA_IFCR_CGIF1;
     s_busy = 0;
 
+#if defined(DMA_NOTIFY_BLXNS)
     if (s_ns_callback) s_ns_callback(status);
+#else
+    /* Same PE: the NS ISR read is ordered after this store, no barrier needed */
+    *s_ns_status = status;
+    NVIC_SetPendingIRQ(SECURE_DMA_DOORBELL_IRQn);   /* tail-chains into the NS doorbell ISR */
+#endif
 }
 
 void GTZC_IRQHandler(void)

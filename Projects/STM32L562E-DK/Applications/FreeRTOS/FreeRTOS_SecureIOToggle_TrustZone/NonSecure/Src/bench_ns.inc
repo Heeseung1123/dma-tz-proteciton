@@ -104,11 +104,19 @@ static inline void bench_before_iter(void)
  * 틱/태스크 선점은 막지 않으므로 max(일부 avg)에는 섞일 수 있다.
  * start / start_table 두 버전을 같은 매크로로 만들어 호출 대상 외에는 코드가 같게 한다
  * (함수 포인터 간접 호출을 쓰면 측정 구간 안 명령이 달라지므로 쓰지 않는다). */
+/* B: the doorbell ISR only completes a task with dmaPending set. The bench still spins on
+ * dmaDone (the notification count it leaves behind is never consumed). */
+#if defined(DMA_NOTIFY_BLXNS)
+#define BENCH_DMA_PENDING(g)   ((void)0)
+#else
+#define BENCH_DMA_PENDING(g)   ((g)->dmaPending = 1u)
+#endif
 #define BENCH_DEFINE_START_ONCE(name, nsc_fn)                                  \
 static void name(uint8_t *dst, dma_task_globals_t *g, uint32_t *total)         \
 {                                                                              \
     int r;                                                                     \
     g->dmaDone = 0;                                                            \
+    BENCH_DMA_PENDING(g);                                                      \
     SECURE_bench_irq_mask(1);                                                  \
     BENCH_MEASURE_NS(*total, r = nsc_fn(BENCH_SRC, dst, BENCH_LEN));           \
     SECURE_bench_irq_mask(0);   /* 여기서 ISR 이 돌아 전송 완료를 처리한다 */   \

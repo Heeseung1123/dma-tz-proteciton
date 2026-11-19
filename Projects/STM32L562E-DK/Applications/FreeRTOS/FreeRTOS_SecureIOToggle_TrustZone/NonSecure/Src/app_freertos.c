@@ -83,7 +83,9 @@ typedef struct
     volatile cycle_stat_t statRoundtrip;
     /* Kept inside the task's own NS-MPU region so the unprivileged task can read them */
     SemaphoreHandle_t     dmaMutex;    /* copy of s_dmaChannelMutex, set by vCreateAppTasks() */
-    volatile uint8_t      dmaDone;     /* set to 1 by App_DmaDoneCallback() */
+    TaskHandle_t          hTask;       /* doorbell ISR notifies this task, set by vCreateAppTasks() */
+    volatile uint8_t      dmaPending;  /* 1 while this task's transfer is in flight (doorbell owner) */
+    volatile uint8_t      dmaDone;     /* set to 1 by the completion handler */
     volatile uint8_t      dmaStatus;   /* last result: 0 = TC, 1 = TEIF */
 } dma_task_globals_t;
 
@@ -125,9 +127,10 @@ static uint8_t s_dmaSrcB[32] __attribute__((aligned(4)));
  * Only privileged code uses this handle; tasks use their globals copy. */
 static SemaphoreHandle_t s_dmaChannelMutex;
 
-/* NS callback called by the Secure DMA ISR via BLXNS (privileged). Owner is unknown,
- * so all tasks' flags are set; harmless since each clears its own under the mutex.
- * Runs at Secure IRQ priority: no FreeRTOS API calls. */
+#if defined(DMA_NOTIFY_BLXNS)
+/* A (comparison target): NS callback called by the Secure DMA ISR via BLXNS (privileged).
+ * Owner is unknown, so all tasks' flags are set; harmless since each clears its own under
+ * the mutex. Runs at Secure IRQ priority: no FreeRTOS API calls, the task spins. */
 static void App_DmaDoneCallback(uint32_t status)
 {
     for (uint32_t i = 0; i < DMA_TASK_NUM; i++)
@@ -135,6 +138,49 @@ static void App_DmaDoneCallback(uint32_t status)
         s_dmaTaskMem[i].globals.v.dmaStatus = (uint8_t)status;
         s_dmaTaskMem[i].globals.v.dmaDone   = 1u;
     }
+}
+#else
+/* B (default): the Secure DMA ISR writes the result here and pends SECURE_DMA_DOORBELL_IRQn.
+ * Checked by SECURE_dma_m2m_init() (NS, writable by the caller). */
+static volatile uint32_t s_dmaStatusWord;
+
+/* NS doorbell ISR (vector of SECURE_DMA_DOORBELL_IRQn). A real NS IRQ at
+ * configMAX_SYSCALL priority, so FreeRTOS FromISR API is allowed: wake the owner task. */
+void DFSDM1_FLT3_IRQHandler(void)
+{
+    BaseType_t woken = pdFALSE;
+    uint32_t status = s_dmaStatusWord;
+
+    for (uint32_t i = 0; i < DMA_TASK_NUM; i++)
+    {
+        dma_task_globals_t *g = &s_dmaTaskMem[i].globals.v;
+        if (g->dmaPending)
+        {
+            g->dmaPending = 0u;
+            g->dmaStatus  = (uint8_t)status;
+            g->dmaDone    = 1u;
+            vTaskNotifyGiveFromISR(g->hTask, &woken);
+        }
+    }
+    portYIELD_FROM_ISR(woken);
+}
+#endif
+
+/* One M2M transfer through the Secure mediator; returns after completion (0) or on reject (-1).
+ * Caller holds the DMA mutex. B blocks on a task notification, A spins on dmaDone. */
+static int App_DmaM2M(dma_task_globals_t *g, void *src, void *dst, uint32_t len)
+{
+    g->dmaDone = 0u;
+#if defined(DMA_NOTIFY_BLXNS)
+    int r = SECURE_dma_m2m_start(src, dst, len);
+    if (r == 0) { while (!g->dmaDone) { } }
+#else
+    g->dmaPending = 1u;          /* set before start: the ISR may run right after EN */
+    int r = SECURE_dma_m2m_start(src, dst, len);
+    if (r == 0) { (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY); }
+    else        { g->dmaPending = 0u; }
+#endif
+    return r;
 }
 
 #define DMA_BENCH_XFER_LEN   8u
@@ -207,11 +253,7 @@ static void vDmaTaskA( void *pvParameters )
   for( ;; )
   {
     xSemaphoreTake(g->dmaMutex, portMAX_DELAY);
-    g->dmaDone = 0;
-    if (SECURE_dma_m2m_start(s_dmaSrcA, s_dmaTaskMem[DMA_TASK_A].cluster.dst, DMA_BENCH_XFER_LEN) == 0)
-    {
-      while (!g->dmaDone) { }
-    }
+    (void)App_DmaM2M(g, s_dmaSrcA, s_dmaTaskMem[DMA_TASK_A].cluster.dst, DMA_BENCH_XFER_LEN);
     xSemaphoreGive(g->dmaMutex);
 
     vTaskDelay(pdMS_TO_TICKS(500));
@@ -230,11 +272,7 @@ static void vDmaTaskB( void *pvParameters )
   for( ;; )
   {
     xSemaphoreTake(g->dmaMutex, portMAX_DELAY);
-    g->dmaDone = 0;
-    if (SECURE_dma_m2m_start(s_dmaSrcB, s_dmaTaskMem[DMA_TASK_B].cluster.dst, DMA_BENCH_XFER_LEN) == 0)
-    {
-      while (!g->dmaDone) { }
-    }
+    (void)App_DmaM2M(g, s_dmaSrcB, s_dmaTaskMem[DMA_TASK_B].cluster.dst, DMA_BENCH_XFER_LEN);
     xSemaphoreGive(g->dmaMutex);
 
     vTaskDelay(pdMS_TO_TICKS(700));
@@ -319,11 +357,22 @@ void vCreateAppTasks( void )
   s_dmaTaskMem[DMA_TASK_A].globals.v.dmaMutex = s_dmaChannelMutex;
   s_dmaTaskMem[DMA_TASK_B].globals.v.dmaMutex = s_dmaChannelMutex;
 
-  SECURE_dma_m2m_init((void *)App_DmaDoneCallback);
+#if defined(DMA_NOTIFY_BLXNS)
+  int initRes = SECURE_dma_m2m_init((void *)App_DmaDoneCallback);
+  configASSERT(initRes == 0);
+#else
+  int initRes = SECURE_dma_m2m_init((void *)&s_dmaStatusWord);
+  configASSERT(initRes == 0);
+  /* Secure set ITNS for the doorbell in init; only now can NS program its NVIC bits */
+  NVIC_SetPriority(SECURE_DMA_DOORBELL_IRQn, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY);
+  NVIC_EnableIRQ(SECURE_DMA_DOORBELL_IRQn);
+#endif
 
   TaskHandle_t hDmaTaskA = NULL, hDmaTaskB = NULL;
   xTaskCreateRestricted( &xDmaTaskAParams, &hDmaTaskA );
   xTaskCreateRestricted( &xDmaTaskBParams, &hDmaTaskB );
+  s_dmaTaskMem[DMA_TASK_A].globals.v.hTask = hDmaTaskA;
+  s_dmaTaskMem[DMA_TASK_B].globals.v.hTask = hDmaTaskB;
   /* With configENABLE_ACCESS_CONTROL_LIST = 1, ungranted take/give fails (pdFAIL) */
   vGrantAccessToSemaphore( hDmaTaskA, s_dmaChannelMutex );
   vGrantAccessToSemaphore( hDmaTaskB, s_dmaChannelMutex );

@@ -1,6 +1,21 @@
 # DMA 완료 통지: A (BLXNS 콜백) vs B (Doorbell) — 자원 사용량 비교 측정 계획
 
-작성일 2026-11-15. **계획 문서**다. 측정 결과는 §9 에 측정 후 기입한다.
+작성일 2026-11-15, 개정 2026-11-19 (B 를 기본 구현으로 전환). **계획 문서**다. 측정 결과는 §9 에 측정 후 기입한다.
+
+### 0. 구현 상태 (2026-11-19)
+| 항목 | 상태 |
+|---|---|
+| 기본 빌드 완료 통지 | **B (doorbell)** [코드]. Secure ISR → `*s_ns_status = status` → `NVIC_SetPendingIRQ(SECURE_DMA_DOORBELL_IRQn)` |
+| A (BLXNS 콜백) | `-DDMA_NOTIFY_BLXNS` 빌드에서만 (비교 대상). Secure·NS 양쪽이 같은 매크로를 본다 (`build_variant.sh` 의 `EVAL_DEFS` 는 양쪽 컴파일에 붙는다) |
+| Doorbell IRQ | `DFSDM1_FLT3_IRQn` = 105 (`secure_nsc.h`). DFSDM1 은 클록을 켜지 않으므로 다른 원인으로 서지 않는다 [도출]. NS 핸들러 `DFSDM1_FLT3_IRQHandler` (`app_freertos.c`), NS 벡터 0x080401e4 = 0x08046b61 [코드] |
+| ITNS / 우선순위 | Secure `SECURE_dma_m2m_init` 가 `NVIC_SetTargetState(105)`. 그 뒤 NS 가 우선순위 5 (`configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY`), Enable. 순서가 바뀌면 NS 쓰기가 WI [도출: ITNS=0 인 IRQ 의 NVIC 비트는 NS 에서 RAZ/WI] |
+| NS 상태 워드 | `s_dmaStatusWord` (NS .bss, 기본 빌드 0x2001b520 — s_dmaTaskMem 앞 fill 에 들어가 `layout ok 0x2001b600` 유지). init 에서 `cmse_check_address_range(CMSE_NONSECURE\|CMSE_MPU_READWRITE)` + 4B 정렬 검사, 실패 시 -1 |
+| 소유 Task | ISR 은 소유자를 모른다. Task 가 start 전에 `globals.dmaPending = 1` 을 세우고, doorbell ISR 이 그 Task 의 `dmaStatus/dmaDone` 을 쓰고 `vTaskNotifyGiveFromISR(globals.hTask)` → `portYIELD_FROM_ISR` (`App_DmaM2M`, `DFSDM1_FLT3_IRQHandler`). 필드는 globals 256B 예약 안이라 배치 불변 |
+| Task 대기 | B: `ulTaskNotifyTake(pdTRUE, portMAX_DELAY)` (블로킹). A: `while(!dmaDone)` |
+| 벤치 | `bench_ns.inc` 의 `BENCH_DEFINE_START_ONCE` 가 B 빌드에서 `dmaPending=1` 을 세운다 (`BENCH_DMA_PENDING`). 측정 구간 밖, 중재자 표 1–8 의 구간 코드는 불변 [코드] |
+| 리스팅 확인 | P2: B 의 `DMA1_Channel1_IRQHandler` 에 `v*`/`blxns` 0 개, A 는 8 개 [코드]. 4 변형(기본/BENCH_PHASE/+BENCH_TS/BLXNS/BLXNS+BENCH_PHASE) 빌드 + layout ok |
+| 미해결 | (1) `GTZC_IRQHandler` (가드 위반 중단) 는 doorbell 을 울리지 않고 `s_busy` 도 풀지 않는다. 공격 (b) 에서 B 의 Task 는 영원히 블록된다 (A 는 영원히 spin, 기존과 같음). `docs/gap-analysis.md` E-2. (2) 보드 미실행 |
+
 
 관련 문서: `docs/plan-isr-overhead-measurement.md` (ISR 경로 분석), `docs/plan-isr-secure-context-overhead.md`
 (Secure context 비용), `Mediator.md`, `cmpTable.md` (같은 측정 하니스).
@@ -18,7 +33,7 @@
 | 목적 2 | **A 와 B 사이**의 자원 사용량 차이를 잰다. 어느 통지 방식이 보안 비용을 덜 늘리는지 본다 |
 | 자원 | 사이클(지연, CPU 점유), 스택(Secure/NS, MSP/PSP), 정적 메모리(Flash, RAM), 인터럽트 자원(IRQ 라인), Secure context |
 | 범위 밖 | 요청 경로(중재자 검증)는 `Mediator.md`/`cmpTable.md` 에서 이미 쟀다. 여기서는 **DMA 완료 이후**만 다룬다 |
-| 제약 | 측정 코드는 BENCH_PHASE 빌드에만 넣는다. 기본 빌드는 바뀌지 않는다. B 는 논문에 없는 설계다. 구현 전에 `docs/gap-analysis.md` 에 기록하고 승인받는다 (CLAUDE.md 규칙 2) |
+| 제약 | 측정 코드는 BENCH_PHASE 빌드에만 넣는다. B 는 논문에 없는 설계다 (논문은 완료 통지 방식을 정하지 않는다). 사용자 요청(2026-11-19)으로 기본 구현이 되었고 `docs/gap-analysis.md` E 에 기록했다 |
 
 ---
 
@@ -88,7 +103,7 @@ DMA1_ChannelX_IRQHandler            (stm32l5xx_it.c, CubeMX 생성)
 
 A 와 B 는 ⑥ 을 NS 에 넘기는 방식(HAL 단계 6, 8, 9)만 다르다.
 
-### 2.2 방식 A: Secure ISR → BLXNS → NS 콜백 (현재 구현)
+### 2.2 방식 A: Secure ISR → BLXNS → NS 콜백 (`DMA_NOTIFY_BLXNS` 빌드, 비교 대상)
 ```
 NS Task (spin: while(!dmaDone))
   ── IRQ 29 (ITNS=0) ──► Secure DMA1_Channel1_IRQHandler     [MSP_S]
@@ -124,8 +139,11 @@ NS Task (block: ulTaskNotifyTake)        (다른 Task 실행 중)
 - Secure ISR 은 NS 함수를 부르지 않는다. 따라서 cmse 콜 스텁, BLXNS/FNC_RETURN, s0–s15 덮어쓰기가 없다 [도출].
 - 대가로 예외가 하나 더 생긴다 (Secure ISR → NS ISR tail-chain). 원래 배경이 NS thread 이면 추가 상태
   컨텍스트(r4–r11 + 서명)는 push 되지 않는다 [도출, 미확인 → EXCCNT 로 확인].
-- Doorbell IRQ: 이 프로젝트의 Secure·NS 어느 쪽도 쓰지 않는 IRQ 1개. 구현할 때 벡터 테이블과 사용 주변장치를 확인해 고른다.
-  NS 우선순위는 configMAX_SYSCALL(5) 이상 (수치 기준)으로 둔다.
+- Doorbell IRQ: `DFSDM1_FLT3_IRQn` (105), NS 우선순위 5. Secure DMA IRQ 도 5 이고 AIRCR.PRIS=0 이므로
+  doorbell 은 Secure ISR 안에서 선점하지 않고 복귀 시 tail-chain 된다 [도출].
+- 상태 워드 store 와 ISPR store 사이에 배리어가 없다. 같은 PE 가 나중에 읽으므로 program order 로 보인다 [도출].
+- 실제 구현은 위 그림에 더해 doorbell ISR 이 Task 배열(2개)을 훑어 `dmaPending` 인 Task 를 찾는다 [코드].
+  B-N 의 NS DMA ISR 도 같은 본문을 써야 C1/C2 비교에서 이 루프가 상쇄된다 (§8).
 
 ### 2.4 A 와 B 의 차이 요약
 | 항목 | A (BLXNS 콜백) | B (Doorbell) |
@@ -153,6 +171,10 @@ NS Task (block: ulTaskNotifyTake)        (다른 Task 실행 중)
 
 - A-N / B-N 의 NS ISR 은 Secure ISR 과 같은 C 본문(①–④)을 쓴다. 차이는 통지 부분뿐이다.
 - 채널 2 를 NS 로 푸는 것은 BENCH_PHASE 빌드에서만 한다 (Secure main.c: `SECM=0`, `NVIC_SetTargetState`).
+- **빌드 2 개**: A-S 는 Secure ISR 이 BLXNS 를 부르는 `DMA_NOTIFY_BLXNS` 빌드에서만 존재한다.
+  따라서 A-S, A-N 은 `..._A` 빌드, B-S, B-N 은 기본(B) 빌드에서 잰다. A-N/B-N 은 NS 전용 코드라 두 빌드 어디서든 같다.
+  교차 확인: A-N 을 두 빌드에서 모두 재서 빌드 간 배치 차이(1-way ICACHE)를 본다. 같은 조건 차이가 수 사이클을 넘으면
+  방식 간 gap 은 warm 이 아닌 off 조건 값으로 판정한다.
 - **방식 내부 gap** = X-S − X-N (X ∈ {A, B}): 그 방식에서 보안이 더하는 비용.
 - **방식 간 gap** = 두 가지를 본다.
   1. A-S − B-S: Secure 구현끼리의 절대 차이.
@@ -273,8 +295,9 @@ Task A:           T5 = CYCCNT ; E5 = EXCCNT  (ulTaskNotifyTake 복귀 직후)
 - **R2:** Secure 힙 `xFreeBytesRemaining` 차이와 `xSecureContexts[]` 를 GDB 로 읽는다 (`docs/plan-isr-secure-context-overhead.md`).
 
 ### 5.6 정적 메모리 측정
-- 4 구성을 각각 빌드하지 않는다. 한 ELF 에 모든 경로가 들어가므로 **함수 단위** 크기(M1)로 비교한다.
-- 이미지 전체 차이(M3)는 기본 빌드 / BENCH_PHASE 빌드 / B 기능을 넣은 기본 빌드(예: `DMA_NOTIFY_DOORBELL`)를 비교한다.
+- M1: 함수 단위 크기를 기본(B) ELF 와 `DMA_NOTIFY_BLXNS`(A) ELF 에서 각각 읽는다.
+  A 쪽 추가: `__gnu_cmse_nonsecure_call`, `App_DmaDoneCallback`. B 쪽 추가: `DFSDM1_FLT3_IRQHandler`, `App_DmaM2M` 의 notify 경로.
+- M3: BENCH_PHASE 없이 기본 빌드 vs `DMA_NOTIFY_BLXNS` 빌드의 `arm-none-eabi-size` 차이 (Secure/NS 각각). 두 빌드는 통지 경로만 다르다 [코드].
 - 스크립트: `scripts/eval/size_isr.sh <dir>` → `results/isr/<variant>/size.txt`.
 
 ---
@@ -368,11 +391,13 @@ Task A:           T5 = CYCCNT ; E5 = EXCCNT  (ulTaskNotifyTake 복귀 직후)
 
 | 파일 | 내용 | 신규/재사용 |
 |---|---|---|
-| `docs/gap-analysis.md` | B (doorbell, NS 상태 워드), NS 채널 기준선 기록 | 신규 항목 |
-| `Secure/Src/main.c` | BENCH_PHASE: CH2 SECM=0 + ITNS, doorbell IRQ ITNS, EXCEVTENA | 기존 블록 확장 |
-| `Secure/Src/secure_nsc.c` | B 경로: `SECURE_dma_m2m_init` 에 상태 워드 등록(`cmse_check_address_range`), ISR 에서 `*ns_status` 쓰기 + pend. A/B 선택은 init 인자로 (매크로 없이). `BENCH_TI(k)` 스탬프 | 기존 ISR 수정 |
+| `docs/gap-analysis.md` | B (doorbell, NS 상태 워드) — **완료** (E). NS 채널 기준선은 벤치 구현 때 추가 | 신규 항목 |
+| `Secure/Src/secure_nsc.c`, `Secure_nsclib/secure_nsc.h` | B 경로 — **완료** (2026-11-19). A/B 선택은 init 인자가 아니라 `DMA_NOTIFY_BLXNS` 매크로로 바꿨다: 각 빌드의 Secure ISR 에 분기가 남지 않아 C2 비교가 깨끗하다. 남은 것: `BENCH_TI(k)` 스탬프 | 기존 ISR 수정 |
+| `NonSecure/Src/app_freertos.c` | Doorbell ISR, `App_DmaM2M`, `hTask/dmaPending` — **완료** | 기존 코드 수정 |
+| `Secure/Src/main.c` | BENCH_PHASE: CH2 SECM=0 + ITNS, EXCEVTENA (doorbell ITNS 는 init 이 이미 한다) | 기존 블록 확장 |
 | `Secure/Src/bench_s.inc` | `SECURE_bench_isr_ts(k)`, Secure 스탬프 보정 | 신규 함수 |
-| `NonSecure/Src/bench_ns.inc` | `ns_dma_start`, NS DMA ISR (CH2), Doorbell ISR, 트리거 Task, `bench_isr_spin()` / `bench_isr_block()`, 표 9–19, `BENCH_COLS 6` | 신규 |
+| `NonSecure/Src/bench_ns.inc` | `ns_dma_start`, NS DMA ISR (CH2, 본문은 doorbell ISR 과 같은 루프 + ①–④), 트리거 Task, `bench_isr_spin()` (A 빌드) / `bench_isr_block()` (B 빌드), 표 9–19, `BENCH_COLS 6`. **B 표 전에 `ulTaskNotifyTake(pdTRUE, 0)` 로 알림 카운트를 비운다**: 표 1–8 의 spin 측정이 doorbell notify 를 1000 회 넘게 쌓아 두므로, 비우지 않으면 B 의 `ulTaskNotifyTake` 가 블록 없이 바로 돌아온다 [코드]. Doorbell ISR 자체는 app_freertos.c 것을 쓴다 (Tb/Tc 스탬프만 BENCH_TS 로 추가) | 신규 |
+| `scripts/eval/run_all.sh` | `PHASE=isr` 에서 변형마다 기본 빌드와 `DMA_NOTIFY_BLXNS` 빌드를 둘 다 만든다 (변형 이름 접미사 `_A`/`_B`) | 수정 |
 | `scripts/eval/run_bench.py` | COLS=6, NAMES, 스택 페인팅/판독 | 수정 |
 | `scripts/eval/size_isr.sh`, `analyze_isr.py` | M1–M3, 요약 표 | 신규 |
 | `docs/CHANGES.md` | 커밋 1 줄 | — |
@@ -381,16 +406,35 @@ Task A:           T5 = CYCCNT ; E5 = EXCCNT  (ulTaskNotifyTake 복귀 직후)
 
 ## 11. 검증 절차
 
-1. 빌드: `./build.sh clean && ./build.sh` (기본 빌드가 바뀌지 않았는지 확인).
-   `scripts/eval/build_variant.sh isr P2_110M_warm_ts0 P2 BENCH_PHASE=1 BENCH_ICACHE` (layout ok 0x2001b600), ts1 도 같이 빌드.
+0. 지금 바로 (B 기본 구현, 벤치 없이) 보드에서 확인:
+   ```
+   (gdb) hbreak DFSDM1_FLT3_IRQHandler        # NS. 500 ms (Task A) / 700 ms (Task B) 마다 걸려야 한다
+   (gdb) p/x *(uint32_t*)0xE000E38C            # ITNS3: 0x200 (bit9 = IRQ 105, 나머지 0: partition 의 ITNS3_VAL=0)
+   (gdb) p/x *(uint32_t*)0xE000E380            # ITNS0: bit29 (DMA1_CH1) = 0
+   (gdb) p/x *(uint8_t*)0xE000E469             # IPR[105] = 0xa0 (우선순위 5)
+   (gdb) p/x *(uint32_t*)0xE000E10C            # ISER3: bit9 = 1
+   (gdb) p s_dmaStatusWord                     # 0 (TC). 1 이면 TEIF
+   (gdb) p s_dmaTaskMem[0].globals.v           # dmaPending=1 (ISR 진입 시), hTask != 0
+   (gdb) finish ; p s_dmaTaskMem[0].globals.v.dmaDone   # 1
+   (gdb) x/8xb s_dmaTaskMem[0].cluster.dst     # 00 01 02 .. 07
+   ```
+   - Task A 가 `ulTaskNotifyTake` 에서 블록하는 동안 Plain_Task 의 LED 토글이 계속되어야 한다 (A 는 spin 이었다).
+   - `configASSERT` 정지(`taskDISABLE_INTERRUPTS(); for(;;)`)가 없어야 한다. 특히 `vPortValidateInterruptPriority`.
+   - A 회귀: `-DDMA_NOTIFY_BLXNS` 빌드에서 이전 동작(콜백, spin)이 같은지.
+1. 빌드: `./build.sh clean && ./build.sh` (기본 = B).
+   `scripts/eval/build_variant.sh isr P2_110M_warm_ts0_B P2 BENCH_PHASE=1 BENCH_ICACHE` 와
+   `... P2_110M_warm_ts0_A P2 BENCH_PHASE=1 BENCH_ICACHE DMA_NOTIFY_BLXNS` (둘 다 layout ok 0x2001b600), ts1 도 같이 빌드.
+   중재자 표 1–8 은 측정 중 DMA IRQ 를 막으므로 통지 방식과 무관하다 [코드]. 그러나 Secure 코드 배치가 바뀌었으므로
+   P2/110/warm 의 START 를 `Mediator.md` 값과 한 번 대조한다 (차이는 배치 효과 [추정]).
 2. 리스팅 확인:
    - `cpsie` 가 T0/E0 판독 직후에 있다.
-   - B 의 Secure ISR 에 `vmov`/`blxns` 가 없다.
+   - B 의 Secure ISR 에 `vmov`/`blxns` 가 없다 (2026-11-19 P2 빌드에서 확인: B 0 개, A 8 개).
    - NS ISR 들에 FP 명령이 없다.
 3. 보드 측정 전 GDB 확인:
    - `p/x *(uint32_t*)0xE0001000`: bit18 EXCEVTENA = 1
    - `p/x *(uint32_t*)0x40020008 & 0x40000`: CH2 SECM = 0
-   - `p/x *(uint32_t*)0xE000E380`: ITNS0 bit30 (CH2) = 1, bit29 (CH1) = 0, doorbell 비트 = 1
+   - `p/x *(uint32_t*)0xE000E380`: ITNS0 bit30 (CH2) = 1, bit29 (CH1) = 0
+   - `p/x *(uint32_t*)0xE000E38C`: ITNS3 bit9 (doorbell 105) = 1 (B 빌드. A 빌드는 0)
    - T0 지점에서 `p/x $control`: FPCA (bit2) = 0 (F0) / 1 (F1)
 4. 측정: `~/st-link.sh` 후 `PHASE=isr scripts/eval/run_all.sh`.
    산출물은 `results/isr/<variant>/{cal_*,a_*,b_*}.csv`, `stack.txt`, `size.txt`.
