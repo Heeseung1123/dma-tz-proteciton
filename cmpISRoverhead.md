@@ -515,6 +515,9 @@ stub 은 k=3 빌드에서만 있다. stub 의 두 번째 literal, str, `b` 는 T
 - epilogue 와 HW 복귀는 나누지 않았다. `pop {pc}` 가 EXC_RETURN 을 읽는 순간 HW 복귀가 시작되므로 경계가 명령 안에 있다 [도출].
 - **비교:** `S − N` (전체), 그리고 구간별 차이. 기대 [추정]: 차이의 대부분은 Secure ISR 본문 + 퇴장/tail-chain, NS prologue/epilogue 는 ≈ 0.
 
+> **결과 (2026-11-20 보드 측정): `measureISR_overhead.md`.** warm S−N = +32 (273 vs 241), off +68 (573 vs 505), 둘 다 1.13x.
+> warm 의 N 구간 분해는 1-way ICACHE conflict miss 때문에 쓰지 않는다 (같은 문서 §4).
+
 ### 12.5 코드 위치
 | 파일 | 내용 |
 |---|---|
