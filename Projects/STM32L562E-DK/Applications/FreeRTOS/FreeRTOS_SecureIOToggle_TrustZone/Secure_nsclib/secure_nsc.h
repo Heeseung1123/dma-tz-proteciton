@@ -56,12 +56,22 @@ void SECURE_LEDToggle(void);
 //
 int SECURE_dma_m2m_start(void*, void*, uint32_t);
 int SECURE_dma_m2m_start_table(void*, void*, uint32_t);   /* 테이블 방식 비교 대상 (secure_nsc.c) */
-int SECURE_dma_m2m_busy(void);
+/* int SECURE_dma_m2m_busy(void); */   /* no NS caller (secure_nsc.c) */
 int SECURE_dma_m2m_init(void*);   /* B: NS status word / A (DMA_NOTIFY_BLXNS): NS callback */
 
 /* NS-targeted IRQ the Secure DMA ISR pends on completion (B). Unused peripheral (DFSDM1 FLT3,
  * IRQ 105, never clocked). The NS handler must be DFSDM1_FLT3_IRQHandler (app_freertos.c). */
 #define SECURE_DMA_DOORBELL_IRQn   DFSDM1_FLT3_IRQn
+
+/* DMA completion ISR bench (cmpISRoverhead.md). Build with BENCH_ISR_TS=k: only stamp k is
+ * emitted, so one run records one point. The stamp reads CYCCNT first, then stores it to SRAM2
+ * 0x20030014, so its own store never reaches the recorded value. Uses only r0/r12 (HW-stacked). */
+#define ISR_TS_ASM  "ldr r12, =0xE0001004 \n ldr r12, [r12] \n ldr r0, =0x20030014 \n str r12, [r0] \n"
+#if defined(BENCH_ISR_TS)
+#define ISR_TS(k)   do { if ((k) == BENCH_ISR_TS) __asm volatile (ISR_TS_ASM ::: "r0", "r12", "memory"); } while (0)
+#else
+#define ISR_TS(k)   ((void)0)
+#endif
 int SECURE_nop3(void*, void*, uint32_t);
 #endif /* SECURE_NSC_H */
 /* USER CODE END Non_Secure_CallLib_h */

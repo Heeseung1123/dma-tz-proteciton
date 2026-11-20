@@ -130,6 +130,12 @@ int main(void)
   HAL_GPIO_ConfigPinAttributes(GPIOH, GPIO_PIN_All, GPIO_PIN_NSEC);
 
   Secure_DMA_LockAllChannels();
+#if defined(BENCH_ISR_TS)
+  /* ISR bench only: DMA1_CH2 is the Insecure baseline (NS programs it, IRQ 30 goes to NS).
+   * SECM is Secure-writable while EN=0 (RM0438 DMA chapter, section no. unconfirmed). */
+  DMA1_Channel2->CCR &= ~DMA_CCR_SECM;
+  NVIC_SetTargetState(DMA1_Channel2_IRQn);
+#endif
   Secure_TZIC_Init();
 
   /* Leave the GPIO clocks enabled to let non-secure having I/Os control */

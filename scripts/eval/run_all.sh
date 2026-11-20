@@ -2,6 +2,14 @@
 # 전체 측정: {P1,P2} x {off,warm,cold} x {110,32MHz} x {타임스탬프 없음/있음}. 먼저 ~/st-link.sh 실행.
 cd "$(dirname "$0")/../.."
 PHASE=${PHASE:-mediator}   # 결과 디렉터리 results/$PHASE (예: PHASE=table, PHASE=table_best EXTRA_DEFS=BENCH_TBL_BEST)
+if [ "$PHASE" = isr ]; then   # DMA 완료 ISR (cmpISRoverhead.md §12): P2/110MHz/warm, 스탬프 k=0..5 빌드 6개
+  for k in 0 1 2 3 4 5; do
+    v=P2_110M_warm_its$k
+    scripts/eval/build_variant.sh isr $v P2 BENCH_PHASE=1 BENCH_ICACHE BENCH_ISR_TS=$k >/dev/null || { echo "BUILD/LAYOUT FAIL $v"; continue; }
+    DIR=results/isr/$v timeout 240 gdb-multiarch -batch -x scripts/eval/run_bench.py 2>&1 | grep -E "^done|Error|TIMEOUT" | cut -c1-200
+  done
+  echo ALLDONE; exit 0
+fi
 for prof in P1 P2; do for clk in 110 32; do for cache in off warm cold; do for ts in 0 1; do
   D="BENCH_PHASE=1 ${EXTRA_DEFS:-}"   # EXTRA_DEFS: 추가 매크로 (예: BENCH_TBL_BEST)
   [ $clk = 32 ] && D="$D BENCH_CLK_32M"

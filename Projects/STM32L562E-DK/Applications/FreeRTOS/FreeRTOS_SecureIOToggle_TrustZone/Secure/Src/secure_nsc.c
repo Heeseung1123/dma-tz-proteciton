@@ -223,19 +223,6 @@ secureportNON_SECURE_CALLABLE int SECURE_dma_m2m_init(void *ns_arg)
 }
 /* Table-search verifier (comparison target): see the #if 0 block after SECURE_dma_m2m_start. */
 
-#if 0
-__attribute__((naked))
-int verify_inst(uint32_t addr)
-{
-	__asm volatile (
-		"TTT	r0, r0		\n"
-		"LSLS   r0, r0, #10	\n"
-		"LSRS	r0, r0, #31	\n"
-		"BX	lr		\n"
-	);
-}
-#endif 
-
 
 
 /*
@@ -429,7 +416,9 @@ secureportNON_SECURE_CALLABLE uint32_t SECURE_bench_verify_table(void *dst, uint
 
 #endif /* table-search comparison */
 
+/* No NS caller; s_busy is checked inside start() itself.
 secureportNON_SECURE_CALLABLE int SECURE_dma_m2m_busy(void) { return s_busy; }
+*/
 
 secureportNON_SECURE_CALLABLE
 int SECURE_nop3(void *a, void *b, uint32_t c)
@@ -437,6 +426,7 @@ int SECURE_nop3(void *a, void *b, uint32_t c)
 
 void DMA1_Channel1_IRQHandler(void)
 {
+    ISR_TS(1);   /* Ta: first instruction (this handler has no prologue at -O1) */
     uint32_t isr = DMA1->ISR;
     uint32_t status;
 
@@ -460,6 +450,7 @@ void DMA1_Channel1_IRQHandler(void)
     *s_ns_status = status;
     NVIC_SetPendingIRQ(SECURE_DMA_DOORBELL_IRQn);   /* tail-chains into the NS doorbell ISR */
 #endif
+    ISR_TS(2);   /* Tb: right before bx lr (EXC_RETURN) */
 }
 
 void GTZC_IRQHandler(void)

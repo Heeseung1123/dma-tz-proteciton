@@ -2,6 +2,10 @@
 
 작성일 2026-11-15, 개정 2026-11-19 (B 를 기본 구현으로 전환). **계획 문서**다. 측정 결과는 §9 에 측정 후 기입한다.
 
+> **2026-11-20 범위 변경 (사용자 지시): 구현된 측정은 §12 다.** B (doorbell) 만, "TC pending 직후 ~ NS ISR 종료(복귀)" 를
+> Secure DMA(CH1) 와 Insecure DMA(CH2) 로 비교한다. 전송 시간과 계측 비용은 제외한다.
+> §1–§11 중 A (BLXNS) 측정, §5.2 트리거 Task, CAL_BLOCK, F0/F1, EXCCNT, §5.5 스택 페인팅, §6 표 구성은 **보류**(기록용으로 남김).
+
 ### 0. 구현 상태 (2026-11-19)
 | 항목 | 상태 |
 |---|---|
@@ -444,3 +448,102 @@ Task A:           T5 = CYCCNT ; E5 = EXCCNT  (ulTaskNotifyTake 복귀 직후)
    - `a_s_f1 > a_s_f0`
    - `b_s_f1 ≈ b_s_f0`
    - B-N, B-S 모두 Task A 가 매 샘플 깨어남 (표 행 수 = N)
+
+---
+
+## 12. 구현된 측정: DMA 완료 ISR, Secure vs Insecure (2026-11-20)
+
+### 12.1 구간
+```
+TC pending ─(IRQ 막힘)─ T0 ─ cpsie ─► HW 진입 ─► ISR(들) ─► HW 복귀 ─► t1
+```
+- **시작:** 전송은 DMA IRQ 를 NVIC 에서 막은 채 끝낸다. pending 을 확인한 뒤 PRIMASK 안에서 NVIC 마스크를 풀고 T0 를 읽는다.
+  `cpsie` 에서 이미 pending 인 TC 인터럽트가 받아들여지므로 **전송 시간은 구간 밖**이다 [도출].
+  PRIMASK_NS 는 AIRCR.PRIS=0 이므로 Secure 우선순위 5 IRQ 도 막는다 [도출, partition_stm32l562xx.h].
+- **끝:** NS ISR 의 `pop {r4,r5,pc}` 가 곧 HW 복귀 시작이라 그 사이에 스탬프를 둘 수 없다. 그래서 끝 = 인터럽트된 코드로 돌아온 직후 t1 이다.
+  HW 복귀는 S, N 에 똑같이 들어간다.
+- Task A 가 실행 중에 자기 자신을 notify 하므로 `woken = 0` 이고 PendSV 는 없다 (`tasks.c:8364`, `taskWAITING_NOTIFICATION` 일 때만 깨움) [코드].
+  남은 알림 카운트는 구간 밖에서 `ulTaskNotifyTake(pdTRUE, 0)` 로 버린다.
+
+| 경로 | 채널 | 구간 안 |
+|---|---|---|
+| **S** | DMA1_CH1, SECM=1, 중재자로 시작, IRQ 29 Secure | HW 진입(NS→S) → Secure ISR → `bx lr` → tail-chain → NS doorbell ISR → HW 복귀 |
+| **N** | DMA1_CH2, SECM=0, NS 가 직접 설정, IRQ 30 NS | HW 진입(NS→NS) → NS DMA ISR → HW 복귀 |
+
+- 두 NS ISR 은 같은 통지 본문 `App_DmaNotifyOwner()` (always_inline) 를 쓴다. 리스팅에서 prologue (`push {r4,r5,lr}; sub sp,#12`), 통지 부분, epilogue (`add sp,#12; pop {r4,r5,pc}`) 가 같다 [코드].
+- N ISR 은 Secure ISR 과 같은 레지스터 작업(원인 판정, EN=0, IFCR)을 한다. `s_busy`, NS 상태 워드, doorbell pend 는 채널이 Secure 라서 생기는 일이므로 N 에는 없다.
+  즉 **S − N = Secure DMA 경로가 완료 처리에 더하는 비용**이다.
+- CH2 를 NS 로 푸는 것은 `BENCH_ISR_TS` 빌드에서만 한다 (Secure `main.c`: `SECM=0`, `NVIC_SetTargetState(DMA1_Channel2_IRQn)`).
+  SECM 은 Secure 만, EN=0 일 때 쓸 수 있다: RM0438 DMA 장, 절 번호 미확인.
+
+### 12.2 계측 비용을 빼는 방법
+- 모든 판독(T0, t1, ISR 스탬프)은 같은 4 명령이다: `ldr ip,=0xE0001004; ldr ip,[ip]; ldr r0,=slot; str ip,[r0]` (`ISR_TS_ASM`, `TS_STAMP`).
+  CYCCNT 판독이 두 번째 명령이고, 저장(tail)은 판독 뒤라 기록값에 들어가지 않는다.
+- **CAL 표:** 같은 함수를 DMA 없이(pending 없음) 돌린다. 구간 명령열이 같으므로 `CAL = (T0 tail) + cpsie + (t1 head)` 이고,
+  ISR 스탬프의 head 도 같은 명령이므로 같은 CAL 로 뺀다.
+- **빌드당 스탬프 1 개** (`BENCH_ISR_TS=k`). 한 실행에 기록되는 점이 하나뿐이라, 스탬프 자신의 비용이 다른 점에 섞이지 않는다.
+  총합은 스탬프가 없는 k=0 빌드의 t1 을 쓴다.
+- 스탬프는 r0/r12 만 쓴다. 둘 다 HW 가 스택한 caller-saved 라서 prologue 가 생기지 않는다.
+  확인: k=1–5 빌드의 세 핸들러에서 스탬프 4 명령을 지우면 k=0 과 명령 단위로 같다 [코드, 2026-11-20 P2 빌드].
+- 남는 오차 [추정]: Secure 스탬프의 literal 은 Secure flash 에서 읽는다. NS 와 head 가 1 사이클 수준 다를 수 있고, 그 차이는 인접 두 구간 사이에서만 옮겨진다 (합은 불변). 미확인.
+
+### 12.3 스탬프 위치 (P2 리스팅 기준)
+| k | S 경로 | N 경로 |
+|---|---|---|
+| 0 | 없음 (총합 t1) | 없음 |
+| 1 Ta | Secure ISR 첫 명령. prologue 가 없다 (leaf, r1–r3 만 사용) | — |
+| 2 Tb | ISPR3 store 뒤, `bx lr` 직전 | — |
+| 3 Tn | doorbell **벡터 진입** (naked stub → `b Doorbell_IRQHandler`) | CH2 **벡터 진입** (naked stub → `b InsecureDma_IRQHandler`) |
+| 4 Tc | doorbell prologue 직후 | CH2 ISR prologue 직후 |
+| 5 Td | doorbell epilogue 직전 | CH2 ISR epilogue 직전 |
+
+stub 은 k=3 빌드에서만 있다. stub 의 두 번째 literal, str, `b` 는 Tn 판독 뒤라 측정에 들어가지 않는다.
+
+### 12.4 결과 계산 (모두 median, CAL = 같은 경로 CAL 표 열0)
+| 구간 | S | N | 식 (열0 = t1−T0, 열1 = Tk−T0) |
+|---|---|---|---|
+| **ISR 전체** | ✔ | ✔ | `ISR = 열0(k=0) − CAL` |
+| HW 진입 | NS→S, 8w 스태킹, VTOR_S | NS→NS, VTOR_NS | S: `Ta − CAL`, N: `Tn − CAL` |
+| Secure ISR 본문 | d34…d6e (TC 경로 21 명령) | — | `Tb − Ta` |
+| Secure 퇴장 + tail-chain | `bx lr`(EXC_RETURN) → VTOR_NS | — | `Tn − Tb` |
+| NS prologue | `push {r4,r5,lr}; sub sp,#12` | 같음 | `Tc − Tn` |
+| NS 본문 | 상태 워드 읽기 + 통지 | 원인 판정·EN·IFCR + 통지 | `Td − Tc` |
+| NS epilogue + HW 복귀 | `add sp,#12; pop {r4,r5,pc}` → 언스태킹 | 같음 | `ISR − (Td − CAL)` |
+
+(여기서 Ta, Tb, … 는 각 빌드 열1 의 median.)
+- 각 열의 구간 합은 ISR 과 정확히 같다 (구성상).
+- epilogue 와 HW 복귀는 나누지 않았다. `pop {pc}` 가 EXC_RETURN 을 읽는 순간 HW 복귀가 시작되므로 경계가 명령 안에 있다 [도출].
+- **비교:** `S − N` (전체), 그리고 구간별 차이. 기대 [추정]: 차이의 대부분은 Secure ISR 본문 + 퇴장/tail-chain, NS prologue/epilogue 는 ≈ 0.
+
+### 12.5 코드 위치
+| 파일 | 내용 |
+|---|---|
+| `Secure_nsclib/secure_nsc.h` | `ISR_TS_ASM`, `ISR_TS(k)` (양쪽 공용) |
+| `Secure/Src/secure_nsc.c` | `ISR_TS(1)`, `ISR_TS(2)` |
+| `Secure/Src/bench_s.inc` | `SECURE_bench_dma_pending()` (NS 는 Secure IRQ pending 비트를 못 본다) |
+| `Secure/Src/main.c` | `BENCH_ISR_TS` 일 때 CH2 SECM=0, IRQ 30 ITNS=1 |
+| `NonSecure/Src/app_freertos.c` | `App_DmaNotifyOwner()` 분리, doorbell 에 `ISR_TS(4/5)`, k=3 stub |
+| `NonSecure/Src/bench_ns.inc` | `DMA1_Channel2_IRQHandler` (N), `bench_isr_table(id, secure, dma)`, 표 9–12 |
+| `scripts/eval/run_bench.py`, `run_all.sh` | 표 이름, `PHASE=isr` (P2/110MHz/warm, k=0–5) |
+
+표: 9 `isr_cal_s`, 10 `isr_s`, 11 `isr_cal_n`, 12 `isr_n`. 각 표 1000 행 + 워밍 1 회 (저장 안 함).
+
+### 12.6 실행과 보드 확인
+```
+~/st-link.sh
+PHASE=isr scripts/eval/run_all.sh          # results/isr/P2_110M_warm_its{0..5}/{isr_cal_s,isr_s,isr_cal_n,isr_n}.csv
+```
+GDB (k=0 빌드):
+```
+(gdb) p/x *(uint32_t*)0x5002001C & 0x20000        # CH2 CCR (Secure 별칭) SECM = 0
+(gdb) p/x *(uint32_t*)0xE000E380                  # ITNS0: bit30 (CH2) = 1, bit29 (CH1) = 0
+(gdb) p/x *(uint32_t*)0xE000E38C                  # ITNS3: bit9 (doorbell 105) = 1
+(gdb) hbreak DMA1_Channel1_IRQHandler ; c ; p/x $lr   # 0xffffffbd 예상 (NS thread → Secure) [도출]
+(gdb) hbreak DFSDM1_FLT3_IRQHandler   ; c ; p/x $lr   # 0xffffffbc 예상 (tail-chain, NS) [도출]
+(gdb) hbreak DMA1_Channel2_IRQHandler ; c ; p/x $lr   # 0xffffffbc 예상
+(gdb) x/8xb s_dmaTaskMem[0].cluster.dst              # 00 01 .. 07 (S, N 둘 다)
+```
+- `configASSERT(!dma || dmaDone)` 에서 멈추지 않아야 한다 (멈추면 ISR 이 t1 전에 끝나지 않았다는 뜻).
+- 판정: CAL 표 열1 = 0 (스탬프 미실행). k≥1 빌드의 S/N 표 열1 > 0 (해당 경로의 스탬프만). CAL 열0 은 S, N 이 거의 같다.
+- k=5 에서 `Td − CAL < ISR` 이어야 한다.
+

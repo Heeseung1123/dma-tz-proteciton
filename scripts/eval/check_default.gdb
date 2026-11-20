@@ -1,4 +1,5 @@
-# 매크로를 모두 끈 기본 빌드가 기존 값(statMediator 828, statRoundtrip 841)을 내는지 확인.
+# (stale) 매크로를 모두 끈 기본 빌드가 기존 값(statMediator 828, statRoundtrip 841)을 내는지 확인했었다.
+# 두 필드는 주석 처리됨. 지금은 globals 만 출력한다.
 # DIR=<기본 빌드 디렉터리> gdb-multiarch -batch -x scripts/eval/check_default.gdb
 set pagination off
 set confirm off
@@ -13,6 +14,8 @@ gdb.execute('monitor reset')
 threading.Timer(4.0, lambda: gdb.post_event(lambda: gdb.execute('interrupt'))).start()
 end
 continue
-p s_dmaTaskMem[0].globals.v.statMediator
-p s_dmaTaskMem[0].globals.v.statRoundtrip
+# statMediator/statRoundtrip are commented out in app_freertos.c (never written since 0ae8cde)
+# p s_dmaTaskMem[0].globals.v.statMediator
+# p s_dmaTaskMem[0].globals.v.statRoundtrip
+p s_dmaTaskMem[0].globals.v
 detach

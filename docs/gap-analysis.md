@@ -88,3 +88,8 @@ DMA cluster 부분은 일단 현재로서는 구현하지 않을 것이고, S-MP
 2. **가드 위반 중단 경로는 바꾸지 않았다.** `GTZC_IRQHandler` 는 채널만 끄고 doorbell 을 울리지 않으며 `s_busy` 도 풀지 않는다 [코드]. 공격 (b) 에서 B 의 Task 는 `ulTaskNotifyTake(portMAX_DELAY)` 에 영원히 블록된다. 이전 A 에서도 spin 이 끝나지 않았으므로 새 결함은 아니다. 질문: TZIC 중단 시 status=2 로 doorbell 을 울리고 `s_busy=0` 으로 할까? (`AttackScenario_*` 는 `#if 0`.)
 3. **IRQ 자원 1개 추가.** 논문 §5 한계(가드 256B + S-MPU 1개)에 더해 NVIC IRQ 1 개와 NS 상태 워드 4B 를 쓴다 [코드]. 논문 한계 절에는 없다.
 4. **상태 워드 포인터는 NSC 로 바뀔 수 있다.** `SECURE_dma_m2m_init` 는 아무 NS 코드나 다시 부를 수 있다. 호출자 권한의 `cmse_check_address_range` 로 호출자가 쓸 수 있는 NS 주소만 받으므로 Secure 메모리를 쓰게 만들 수는 없다 [도출]. 다만 특권 NS 호출자는 (PRIVDEFENA 로) 가드 블록 주소도 넘길 수 있다. 그러면 Secure ISR 이 가드에 4B 를 쓴다. 가드에는 NS 데이터가 없으므로 영향은 없다고 본다 [추정]. 콜백 포인터를 다시 등록하던 A 와 노출 범위가 같다.
+
+## F. ISR 측정용 Insecure DMA 기준선 (2026-11-20)
+
+논문에 없는 평가 전용 설정이다 [논문 밖]. `BENCH_ISR_TS` 빌드에서만 DMA1_CH2 를 SECM=0 으로 풀고 IRQ 30 을 NS 로 보낸다 (Secure `main.c`).
+CH2 는 중재자와 가드 검사 없이 NS 가 직접 쓴다. 기본 빌드와 다른 평가 빌드에는 영향이 없다 [코드]. 측정 방법은 `cmpISRoverhead.md` §12.

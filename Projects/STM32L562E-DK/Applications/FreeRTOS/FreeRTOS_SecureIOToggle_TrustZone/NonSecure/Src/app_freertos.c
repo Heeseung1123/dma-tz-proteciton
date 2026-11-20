@@ -72,15 +72,15 @@ void vApplicationStackOverflowHook(xTaskHandle xTask, signed char *pcTaskName)
  * address order: [globals 256B | Cluster 256B | guard 256B]. One struct per task
  * fixes the order (GCC reverses separate statics). Secure addresses are hardcoded. */
 
-/* Cycle stats (32 runs after 1 warm-up). medStat: SECURE_dma_m2m_start() call cost;
- * rtStat: call -> Secure ISR -> NS callback. Rejected runs are excluded
- * (min stays 0xFFFFFFFF if all are rejected). GDB: p s_dmaTaskMem[0].globals.v */
+/* Unused since 0ae8cde (never written): mediator cost is in bench_ns.inc tables 1-8,
+ * ISR cost in the planned ISR tables. Kept commented; globals stay a 256B union.
 typedef struct { uint32_t min, max, avg; } cycle_stat_t;
+*/
 
 typedef struct
 {
-    volatile cycle_stat_t statMediator;
-    volatile cycle_stat_t statRoundtrip;
+    /* volatile cycle_stat_t statMediator;  */
+    /* volatile cycle_stat_t statRoundtrip; */
     /* Kept inside the task's own NS-MPU region so the unprivileged task can read them */
     SemaphoreHandle_t     dmaMutex;    /* copy of s_dmaChannelMutex, set by vCreateAppTasks() */
     TaskHandle_t          hTask;       /* doorbell ISR notifies this task, set by vCreateAppTasks() */
@@ -144,12 +144,11 @@ static void App_DmaDoneCallback(uint32_t status)
  * Checked by SECURE_dma_m2m_init() (NS, writable by the caller). */
 static volatile uint32_t s_dmaStatusWord;
 
-/* NS doorbell ISR (vector of SECURE_DMA_DOORBELL_IRQn). A real NS IRQ at
- * configMAX_SYSCALL priority, so FreeRTOS FromISR API is allowed: wake the owner task. */
-void DFSDM1_FLT3_IRQHandler(void)
+/* Completion -> owner task. Shared by the doorbell ISR and the bench's Insecure DMA ISR
+ * (bench_ns.inc), so both paths run the same notify code. */
+static inline __attribute__((always_inline)) void App_DmaNotifyOwner(uint32_t status)
 {
     BaseType_t woken = pdFALSE;
-    uint32_t status = s_dmaStatusWord;
 
     for (uint32_t i = 0; i < DMA_TASK_NUM; i++)
     {
@@ -163,6 +162,21 @@ void DFSDM1_FLT3_IRQHandler(void)
         }
     }
     portYIELD_FROM_ISR(woken);
+}
+
+#if BENCH_ISR_TS == 3
+/* ISR bench stamp 3 (Tn): vector entry, before the compiler prologue of the real handler */
+__attribute__((naked)) void DFSDM1_FLT3_IRQHandler(void) { __asm volatile (ISR_TS_ASM "b Doorbell_IRQHandler \n"); }
+#define DFSDM1_FLT3_IRQHandler  Doorbell_IRQHandler
+#endif
+
+/* NS doorbell ISR (vector of SECURE_DMA_DOORBELL_IRQn). A real NS IRQ at
+ * configMAX_SYSCALL priority, so FreeRTOS FromISR API is allowed: wake the owner task. */
+void DFSDM1_FLT3_IRQHandler(void)
+{
+    ISR_TS(4);   /* Tc: after prologue */
+    App_DmaNotifyOwner(s_dmaStatusWord);
+    ISR_TS(5);   /* Td: before epilogue */
 }
 #endif
 

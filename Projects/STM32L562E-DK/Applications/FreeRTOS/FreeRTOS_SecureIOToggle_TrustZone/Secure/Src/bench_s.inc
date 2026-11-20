@@ -49,6 +49,12 @@ secureportNON_SECURE_CALLABLE void SECURE_bench_irq_mask(int mask)
     __DSB(); __ISB();
 }
 
+/* ISR bench: is the DMA TC interrupt pending? (NS cannot see Secure IRQ pending bits) */
+secureportNON_SECURE_CALLABLE int SECURE_bench_dma_pending(void)
+{
+    return (int)NVIC_GetPendingIRQ(DMA_CH_IRQn);
+}
+
 /* cold 조건: ICACHE 전체 무효화 */
 secureportNON_SECURE_CALLABLE void SECURE_bench_cold(void)
 {

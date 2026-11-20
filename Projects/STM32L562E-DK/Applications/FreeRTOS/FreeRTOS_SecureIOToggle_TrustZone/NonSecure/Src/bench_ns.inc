@@ -62,6 +62,7 @@ extern uint32_t SECURE_bench_verify_calib(void);
 extern uint32_t SECURE_bench_verify_table(void *dst, uint32_t len);
 extern void     SECURE_bench_irq_mask(int mask);
 extern void     SECURE_bench_cold(void);
+extern int      SECURE_bench_dma_pending(void);
 
 /* gdb hbreak 지점 */
 __attribute__((noinline)) void bench_hit(void) { __asm volatile ("nop"); }
@@ -126,6 +127,89 @@ static void name(uint8_t *dst, dma_task_globals_t *g, uint32_t *total)         \
 BENCH_DEFINE_START_ONCE(bench_start_once,       SECURE_dma_m2m_start)
 BENCH_DEFINE_START_ONCE(bench_start_table_once, SECURE_dma_m2m_start_table)
 
+#if defined(BENCH_ISR_TS)
+/* ---- DMA 완료 ISR 비용: Secure (CH1, 중재자 + doorbell) vs Insecure (CH2, NS ISR) ----
+ * cmpISRoverhead.md §12. 구간: TC 가 이미 pending 인 상태에서 T0 -> cpsie -> HW 진입 -> ISR(들)
+ * -> HW 복귀 -> t1. 전송 시간은 T0 전에 끝난다. 열0 = t1-T0, 열1 = Tk-T0 (BENCH_ISR_TS=k 의 스탬프,
+ * 0 이면 스탬프 없음). 계측 비용은 같은 코드를 pending 없이 돌린 CAL 표의 열0 을 빼서 없앤다. */
+#define BENCH_ID_ISR_CAL_S   9u    /* Secure 경로 코드, DMA 없음 (보정) */
+#define BENCH_ID_ISR_S      10u
+#define BENCH_ID_ISR_CAL_N  11u    /* Insecure 경로 코드, DMA 없음 (보정) */
+#define BENCH_ID_ISR_N      12u
+
+#define ISR_SLOT  ((volatile uint32_t *)0x20030010u)   /* [0] T0, [1] Tk (ISR_TS_ASM), [2] t1 */
+/* T0/t1 use the same instructions as the ISR stamp, so their head/tail cancel against CAL */
+#define TS_STAMP(addr)  __asm volatile ("ldr r12, =0xE0001004 \n ldr r12, [r12] \n ldr r0, =%c0 \n str r12, [r0] \n" \
+                                        :: "i"(addr) : "r0", "r12", "memory")
+
+#if BENCH_ISR_TS == 3
+__attribute__((naked)) void DMA1_Channel2_IRQHandler(void) { __asm volatile (ISR_TS_ASM "b InsecureDma_IRQHandler \n"); }
+#define DMA1_Channel2_IRQHandler  InsecureDma_IRQHandler
+#endif
+
+/* Insecure 기준선 ISR: Secure ISR 과 같은 레지스터 작업(원인 판정, EN=0, IFCR) + 같은 통지 본문.
+ * s_busy, 상태 워드, doorbell pend 는 채널이 Secure 라서 생기는 일이므로 여기에는 없다. */
+void DMA1_Channel2_IRQHandler(void)
+{
+    ISR_TS(4);   /* Tc: after prologue */
+    uint32_t isr = DMA1->ISR;
+    uint32_t status;
+
+    if (isr & DMA_ISR_TEIF2)      { status = 1u; }
+    else if (isr & DMA_ISR_TCIF2) { status = 0u; }
+    else { DMA1->IFCR = DMA_IFCR_CGIF2; return; }
+
+    DMA1_Channel2->CCR &= ~DMA_CCR_EN;
+    DMA1->IFCR = DMA_IFCR_CGIF2;
+    App_DmaNotifyOwner(status);
+    ISR_TS(5);   /* Td: before epilogue */
+}
+
+/* 표 하나 (워밍 1회 + BENCH_N 회). secure: CH1 중재자 경로 / 아니면 CH2. dma=0 이면 보정 */
+static void bench_isr_table(uint32_t id, int secure, int dma)
+{
+    dma_task_globals_t *g = &s_dmaTaskMem[DMA_TASK_A].globals.v;
+
+    for (uint32_t i = 0; i <= BENCH_N; i++)          /* i == 0: warm-up, not stored */
+    {
+        g->dmaDone = 0u;
+        ISR_SLOT[1] = 0u;
+        if (secure) { SECURE_bench_irq_mask(1); } else { NVIC_DisableIRQ(DMA1_Channel2_IRQn); }
+
+        if (dma)                                      /* run the transfer to TC, IRQ masked */
+        {
+            g->dmaPending = 1u;
+            if (secure)
+            {
+                int r = SECURE_dma_m2m_start(BENCH_SRC, s_dmaTaskMem[DMA_TASK_A].cluster.dst, BENCH_LEN);
+                configASSERT(r == 0);
+                while (!SECURE_bench_dma_pending()) { }
+            }
+            else
+            {
+                DMA1_Channel2->CNDTR = BENCH_LEN;
+                DMA1_Channel2->CCR  |= DMA_CCR_EN;
+                while (!NVIC_GetPendingIRQ(DMA1_Channel2_IRQn)) { }
+            }
+        }
+
+        __disable_irq();                              /* PRIMASK_NS also holds the Secure IRQ (PRIS=0) */
+        if (secure) { SECURE_bench_irq_mask(0); }    /* ends with DSB+ISB */
+        else        { NVIC_EnableIRQ(DMA1_Channel2_IRQn); __DSB(); __ISB(); }   /* same barrier */
+        TS_STAMP(0x20030010u);                        /* T0 */
+        __enable_irq();                               /* the pending TC interrupt is taken here */
+        TS_STAMP(0x20030018u);                        /* t1 */
+
+        configASSERT(!dma || g->dmaDone);
+        (void)ulTaskNotifyTake(pdTRUE, 0);            /* drop the self-notification */
+        if (i == 0u) { continue; }
+        BENCH_ROW(i - 1u)[0] = ISR_SLOT[2] - ISR_SLOT[0];
+        BENCH_ROW(i - 1u)[1] = ISR_SLOT[1] ? (ISR_SLOT[1] - ISR_SLOT[0]) : 0u;
+    }
+    bench_table_done(id);
+}
+#endif /* BENCH_ISR_TS */
+
 /* DMA_Task_A 가 호출하는 진입점 */
 static void Bench_Main(void)
 {
@@ -134,6 +218,23 @@ static void Bench_Main(void)
     uint32_t i, a;
 
     for (i = 0; i < BENCH_LEN; i++) { BENCH_SRC[i] = (uint8_t)i; }
+
+#if defined(BENCH_ISR_TS)
+    /* ISR 빌드는 ISR 표만 잰다. CH2 는 Secure main.c 가 SECM=0, ITNS=1 로 풀어 두었다.
+     * 설정은 SECURE_dma_m2m_init 의 CH1 과 같다 (M2M, 8-bit, PL high, TCIE/TEIE). */
+    DMA1_Channel2->CPAR  = (uint32_t)BENCH_SRC;
+    DMA1_Channel2->CM0AR = (uint32_t)dst;
+    DMA1_Channel2->CCR  |= DMA_CCR_MEM2MEM | DMA_CCR_MINC | DMA_CCR_PINC | DMA_CCR_PL_1
+                         | DMA_CCR_TCIE | DMA_CCR_TEIE;
+    NVIC_SetPriority(DMA1_Channel2_IRQn, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY);
+
+    bench_isr_table(BENCH_ID_ISR_CAL_S, 1, 0);
+    bench_isr_table(BENCH_ID_ISR_S,     1, 1);
+    bench_isr_table(BENCH_ID_ISR_CAL_N, 0, 0);
+    bench_isr_table(BENCH_ID_ISR_N,     0, 1);
+    bench_table_done(BENCH_ID_END);
+    for (;;) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+#endif
 
     /* warm 조건 예열 겸 첫 호출 비용 제외 */
     bench_start_once(dst, g, &a);
