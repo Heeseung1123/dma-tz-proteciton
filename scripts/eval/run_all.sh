@@ -2,12 +2,17 @@
 # 전체 측정: {P1,P2} x {off,warm,cold} x {110,32MHz} x {타임스탬프 없음/있음}. 먼저 ~/st-link.sh 실행.
 cd "$(dirname "$0")/../.."
 PHASE=${PHASE:-mediator}   # 결과 디렉터리 results/$PHASE (예: PHASE=table, PHASE=table_best EXTRA_DEFS=BENCH_TBL_BEST)
-if [ "$PHASE" = isr ]; then   # DMA 완료 ISR (cmpISRoverhead.md §12): P2/110MHz/warm, 스탬프 k=0..5 빌드 6개
-  for k in 0 1 2 3 4 5; do
-    v=P2_110M_warm_its$k
-    scripts/eval/build_variant.sh isr $v P2 BENCH_PHASE=1 BENCH_ICACHE BENCH_ISR_TS=$k >/dev/null || { echo "BUILD/LAYOUT FAIL $v"; continue; }
+if [ "$PHASE" = isr ]; then   # DMA 완료 ISR (cmpISRoverhead.md §12): 스탬프 k=0..5 빌드 6개 x 조건
+  # ISR_CLK="110 32", ISR_CACHE="warm off" 로 조건 선택 (기본 P2/110MHz/warm). cold 는 ISR 벤치에 없음.
+  for clk in ${ISR_CLK:-110}; do for cache in ${ISR_CACHE:-warm}; do for k in 0 1 2 3 4 5; do
+    D="BENCH_PHASE=1 BENCH_ISR_TS=$k"
+    [ $clk = 32 ] && D="$D BENCH_CLK_32M"
+    [ $cache = warm ] && D="$D BENCH_ICACHE"
+    v=P2_${clk}M_${cache}_its$k
+    scripts/eval/build_variant.sh isr $v P2 $D >/dev/null || { echo "BUILD/LAYOUT FAIL $v"; continue; }
     DIR=results/isr/$v timeout 240 gdb-multiarch -batch -x scripts/eval/run_bench.py 2>&1 | grep -E "^done|Error|TIMEOUT" | cut -c1-200
-  done
+    [ $cache = warm ] && DIR=results/isr/$v timeout 240 gdb-multiarch -batch -x scripts/eval/icache_mon.py 2>&1 | grep -E "Error|TIMEOUT" | cut -c1-200
+  done; done; done
   echo ALLDONE; exit 0
 fi
 for prof in P1 P2; do for clk in 110 32; do for cache in off warm cold; do for ts in 0 1; do

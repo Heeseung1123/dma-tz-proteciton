@@ -1,0 +1,8 @@
+variant=P2_32M_off_its1 profile=P2 S=-O1 NS=-O1 defs=[ -DBENCH_PHASE=1 -DBENCH_ISR_TS=1 -DBENCH_CLK_32M]
+git=7e23d2f9b38cc1f939011c52402ee586e0f0e2e0 dirty=
+arm-none-eabi-gcc (GNU Tools for STM32 14.3.rel1.20251027-0700) 14.3.1 20250623
+9891a8417f73c4968a818002d5b1199c78e3b1fefe8f09aa7f1630ec69c6b09a  FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf
+dd08562f9b31977484a74d2a841476dd5268216249a4ffe06edcb6f9ea6fa636  FreeRTOS_SecureIOToggle_TrustZone_Secure.elf
+   text	   data	    bss	    dec	    hex	filename
+  35864	  10240	  12624	  58728	   e568	results/isr/P2_32M_off_its1/FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf
+   9320	     32	  11992	  21344	   5360	results/isr/P2_32M_off_its1/FreeRTOS_SecureIOToggle_TrustZone_Secure.elf

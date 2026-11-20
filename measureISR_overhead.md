@@ -4,7 +4,7 @@
 방법과 스탬프 위치는 `cmpISRoverhead.md` §12. 이 문서는 **결과**다.
 
 표기: [실측] 보드 측정 / [코드] 소스·리스팅 / [도출] 아키텍처 규칙에서 유도 / [추정] 근거 부족 / 미확인.
-값은 모두 CPU 사이클(110 MHz), N = 1000 (워밍 1 회 제외), 특별한 말이 없으면 **중앙값**.
+값은 모두 CPU 사이클(§1–§4 는 110 MHz, §8 은 32 MHz), N = 1000 (워밍 1 회 제외), 특별한 말이 없으면 **중앙값**.
 
 ---
 
@@ -14,13 +14,17 @@
 |---|---|---|---|---|
 | P2 / 110 MHz / **ICACHE warm** (헤드라인) | 273 | 241 | **+32** | 1.13x |
 | P2 / 110 MHz / **ICACHE off** (대조) | 573 | 505 | **+68** | 1.13x |
+| P2 / 32 MHz / **ICACHE warm** (§8) | 247 | 220 | **+27** | 1.12x |
+| P2 / 32 MHz / **ICACHE off** (§8) | 283 | 252 | **+31** | 1.12x |
 
 - 구간: TC 인터럽트가 이미 pending 인 상태에서 `cpsie` → HW 진입 → ISR(들) → HW 복귀까지. 전송 시간과 계측 비용은 뺐다 [코드, §12.1–12.2].
 - **Secure DMA 경로가 완료 처리 1 회에 더하는 비용은 warm 에서 32 사이클(0.29 µs), off 에서 68 사이클(0.62 µs)** 이다 [실측].
   두 조건 모두 N 대비 13 % 증가다.
 - 더해지는 비용은 Secure ISR 본문과 Secure 퇴장 + tail-chain 에서 생긴다. 그 일부는 N 이 NS ISR 에서 하는
   DMA 레지스터 작업(ISR 판독, EN=0, IFCR)이 Secure 로 옮겨간 것이라 상쇄된다 (§2) [실측].
-- 두 경로 모두 비용의 대부분(warm 200/241, off 434/462)은 **공통 NS 통지 본문** (`App_DmaNotifyOwner` →
+- 32 MHz (FLASH 1 WS) 에서는 S − N 이 warm +27, off +31 로 거의 같다. 110 MHz 에서 warm 과 off 의 차이(+32 vs +68)는 대부분 flash 대기 상태 때문이다 (§8) [실측].
+  32 MHz 에서는 warm, off 모두 **모든 검증을 통과**한다. miss 당 비용이 약 3–4 사이클로 작아서, 110 MHz warm 의 N 분해 실패가 재현되지 않는다.
+- 두 경로 모두 비용의 대부분(NS 본문: 110 MHz off 434/462, 32 MHz warm 174/199)은 **공통 NS 통지 본문** (`App_DmaNotifyOwner` →
   `MPU_vTaskGenericNotifyGiveFromISR`)이다 [실측]. 보안 경로에 따른 차이보다 RTOS 통지 비용이 훨씬 크다.
 - **주의 (§4):** ICACHE 가 1-way (direct-mapped) 라서 warm 값에는 iteration 당 4–5 회의 conflict miss 가 들어 있다.
   N 경로는 코드 배치에 민감해서, 스탬프를 넣은 빌드(k=3–5)는 miss 가 2–4 회 늘어난다. 따라서 **warm 의 N 구간 분해는 신뢰할 수 없다.**
@@ -172,6 +176,9 @@ SysTick 은 끄고, `set trust-readonly-sections on` 으로 GDB 가 코드를 EL
 3. 전체 비용은 RTOS 통지(`vTaskGenericNotifyGiveFromISR`, MPU wrapper 경유)가 지배한다. warm 에서 S 의 73 %, N 은 그 이상이다 [실측].
 4. warm 의 절대값은 1-way ICACHE 의 conflict miss(miss 당 약 11 사이클)를 포함하므로 배치에 따라 수십 사이클 달라진다.
    논문/보고용 수치는 warm k=0 총합과 비율 1.13x 를 쓰고, 구간 분해는 off 표(§2.2)를 쓰기를 권한다.
+5. 32 MHz (D-Box 와 같은 클럭, §8): S − N 은 warm +27 (1.12x), off +31 (1.12x) 이다. 1 WS 라서 cache 유무에 따른 차이가 작고,
+   warm 분해도 검증을 통과한다. Secure 고유분(진입 차 + Secure ISR 본문 + 퇴장/tail-chain)은 32 MHz warm 에서 0 + 38 + 7 = **45** 로
+   110 MHz warm 과 같다 [실측]. 즉 Secure 쪽 비용은 이 조건에서 클럭과 flash 대기 상태에 무관하다.
 
 ---
 
@@ -181,7 +188,8 @@ SysTick 은 끄고, `set trust-readonly-sections on` 으로 GDB 가 코드를 EL
 |---|---|
 | `results/isr/P2_110M_warm_its{0..5}/` | `isr_cal_s/isr_s/isr_cal_n/isr_n.csv`, `env.txt`, `manifest.txt`, `icmon.txt` (§4.2), `icwin.txt` (§4.3) |
 | `results/isr/P2_110M_off_its{0..5}/` | CSV, `env.txt`, `manifest.txt` |
-| `results/isr/summary.md`, `summary_off.md` | `analyze_isr.py` 출력 |
+| `results/isr/P2_32M_{warm,off}_its{0..5}/` | 32 MHz (§8). warm 에는 `icmon.txt` 포함 |
+| `results/isr/summary.md`, `summary_off.md`, `summary_32M_warm.md`, `summary_32M_off.md` | `analyze_isr.py` 출력 |
 | `scripts/eval/analyze_isr.py` | 집계. 두 번째 인자로 변형 접두사 지정 (기본 `P2_110M_warm`) |
 | `scripts/eval/icache_mon.py`, `icache_win.py` | ICACHE 모니터 측정 (GDB) |
 
@@ -194,10 +202,91 @@ for k in 0 1 2 3 4 5; do v=P2_110M_off_its$k
 python3 scripts/eval/analyze_isr.py results/isr               > results/isr/summary.md
 python3 scripts/eval/analyze_isr.py results/isr P2_110M_off   > results/isr/summary_off.md
 DIR=results/isr/P2_110M_warm_its0 gdb-multiarch -batch -x scripts/eval/icache_mon.py
+# 32 MHz (§8): warm 빌드는 icache_mon 까지 자동 실행
+ISR_CLK=32 ISR_CACHE="warm off" PHASE=isr scripts/eval/run_all.sh
+python3 scripts/eval/analyze_isr.py results/isr P2_32M_warm > results/isr/summary_32M_warm.md
+python3 scripts/eval/analyze_isr.py results/isr P2_32M_off  > results/isr/summary_32M_off.md
 ```
 
 ## 7. 남은 일 / 미확인
 - 2-way ICACHE 조건에서 같은 측정 (배치 민감도 확인). 하려면 Secure `MX_ICACHE_Init` 를 바꿔야 해서 기존 측정과 조건이 달라진다. 결정이 필요하다.
-- P1, 32 MHz, cold 조건은 재지 않았다 (`run_all.sh` 의 isr 단계는 P2/110/warm 만 정의).
+- P2/32 MHz 는 §8 에서 쟀다. P1 은 재지 않았다. cold 는 ISR 벤치(`bench_isr_table`)에 구현되어 있지 않다 (`bench_before_iter` 를 부르지 않음) [코드].
 - A (BLXNS) 방식, 스택/정적 메모리(§4.2–4.3 of `cmpISRoverhead.md`)는 보류 상태 그대로다.
 - max 표본(warm S 537, N 450)의 원인이 SysTick 인지는 EXCCNT 로 확인하지 않았다 [추정].
+
+---
+
+## 8. 32 MHz 결과 (P2, FLASH 1 WS)
+
+측정일 2026-11-20. 커밋 `7e23d2f` (manifest `dirty=` 없음). 빌드 정의는 110 MHz 와 같고 `BENCH_CLK_32M` 만 더했다.
+
+### 8.1 "올바른 방법" 으로 본 점
+| 항목 | 확인 |
+|---|---|
+| 클럭이 실제로 32 MHz 인가 | `env.txt`: SystemCoreClock = 32000000, FLASH_ACR = 0x1 (LATENCY 1 WS) [실측]. NS `SystemClock_Config`: MSI 4 MHz × N16 / R2 = 32 MHz, `FLASH_LATENCY_1` [코드] |
+| 1 WS 가 32 MHz 에 맞는가 | 전압 범위 0 에서 1 WS 의 상한은 40 MHz 로 알고 있다. RM0438 Flash 장 "Read access latency" 표, 절 번호 미확인 |
+| warm / off 둘 다 | warm (`BENCH_ICACHE`, ICACHE_CR = 0x1, 1-way) 와 off (ICACHE_CR = 0x0) [실측] |
+| 스탬프 빌드 k=0..5 전부 | 12 빌드 모두 layout ok, 같은 소스 커밋 |
+| 배치 효과 감시 | warm 각 빌드에 `icache_mon.py` 를 같이 돌렸다 (`run_all.sh` 의 isr 단계에 추가) |
+| 사이클 단위 | DWT CYCCNT 는 코어 클럭이므로 110 MHz 와 직접 비교 가능. 시간은 사이클 / 32 MHz |
+| 구간 내 측정 코드 | 110 MHz 와 같다. 클럭에 따라 바뀌는 상수(타임아웃 등)는 없다 [코드 `bench_isr_table`] |
+
+### 8.2 구간 전체 (k=0)
+| 조건 | 경로 | ISR: 중앙값 (min / avg / max) | CAL | 중앙값 표본 수 |
+|---|---|---|---|---|
+| warm | S | **247** (247 / 249.9 / 436) | 9 | 962 / 1000 |
+| warm | N | **220** (220 / 222.7 / 400) | 9 | 968 / 1000 |
+| off | S | **283** (283 / 287.5 / 502) | 12 | 976 / 1000 |
+| off | N | **252** (252 / 255.3 / 453) | 12 | 983 / 1000 |
+
+- S − N: warm **+27 (0.84 µs)**, off **+31 (0.97 µs)**. 비율은 둘 다 1.12x [실측].
+- 중앙값 표본 비율이 110 MHz(98–99 %)보다 조금 낮다. 32 MHz 에서는 SysTick 주기(1 ms)가 32 k 사이클로 짧아서 끼어드는 표본이 많아진 것으로 본다 [추정].
+
+### 8.3 구간 분해
+| 구간 | warm S | warm N | warm S − N | off S | off N | off S − N |
+|---|---|---|---|---|---|---|
+| HW 진입 | 12 | 12 | +0 | 13 | 13 | +0 |
+| Secure ISR 본문 | 38 | — | +38 | 46 | — | +46 |
+| Secure 퇴장 + tail-chain | 7 | — | +7 | 9 | — | +9 |
+| NS prologue | 3 | 4 | −1 | 2 | 4 | −2 |
+| NS 본문 | 174 | 199 | −25 | 201 | 223 | −22 |
+| NS epilogue + HW 복귀 | 13 | 5 | +8 | 12 | 12 | +0 |
+| **합** | **247** | **220** | **+27** | **283** | **252** | **+31** |
+
+검증 (`summary_32M_warm.md`, `summary_32M_off.md` §3): warm, off 모두 **전 항목 OK** [실측].
+- P_k 단조 증가: warm S 12, 50, 57, 60, 234 < 247 / N 12, 16, 215 < 220. off S 13, 59, 68, 70, 271 < 283 / N 13, 17, 240 < 252.
+- CAL 열1 = 0, k=1,2 의 N 열1 = 0, CAL S = N (9 / 9, 12 / 12).
+- 스탬프 1 개당 총합 증가: off S +10 – +18, N +10 – +13. 모두 CAL(12) 근처다 (k=3 은 stub 명령이 더 있음). warm S +8 – +12.
+
+### 8.4 warm 의 배치 효과는 남아 있지만 작다
+ICACHE 모니터 (`icmon.txt`, 표당 1001 iteration) [실측]:
+
+| k | 표 10 isr_s miss / iter | 표 12 isr_n miss / iter | warm N: ISR(k) − ISR(0) |
+|---|---|---|---|
+| 0, 1, 2 | 10.6 | 4.18 | 0 |
+| 3 | 10.5 | 6.07 | +16 |
+| 4 | 10.6 | 8.14 | +20 |
+| 5 | 10.6 | 8.14 | +18 |
+
+- miss 수는 110 MHz 와 거의 같다 (같은 바이너리 배치, 110 MHz: 10.2 / 4.07 → 8.07). 바뀐 것은 miss 당 비용이다.
+- miss 당 비용: k=3 (16 − 9) / 2 ≈ 3.5, k=4 (20 − 9) / 4 ≈ 2.8 사이클. 110 MHz 의 약 11 의 1/3 정도다 [실측 기반 추정].
+  16 B 라인을 64-bit 두 번 읽고 한 번에 (1 + WS) 사이클이 든다고 보면 1 WS 는 4, 5 WS 는 12 다 [추정, 미확인: 플래시 인터페이스 폭].
+- 그래서 검증은 통과하지만 **warm N 의 마지막 두 구간에는 약 ±9 사이클의 치우침이 남는다.**
+  k=5 빌드가 miss 를 iteration 당 약 4 회 더 겪으므로 N 본문(199)은 약 9–11 크게, epilogue(5)는 그만큼 작게 나온다.
+  보정하면 N epilogue ≈ 14 로 S(13)와 맞는다 [추정]. 이 치우침 때문에 warm 의 "NS epilogue S − N +8" 은 실제 차이가 아니다.
+- **S 분해는 110 MHz warm 과 구간마다 같다** (12 / 38 / 7 / 3 / — / 13). 다른 것은 NS 본문(200 → 174)뿐이다.
+  따라서 S 경로의 iteration 당 miss 는 NS 통지 본문에 몰려 있고, Secure ISR, tail-chain, prologue/epilogue 는 이 배치에서 hit 로 돈다 [실측 기반 추정].
+
+### 8.5 110 MHz 와 비교
+| 조건 | S | N | S − N | Secure 고유분 (진입 차 + 본문 + 퇴장) | NS 에서 줄어든 일 |
+|---|---|---|---|---|---|
+| 110 MHz warm | 273 | 241 | +32 | 0 + 38 + 7 = 45 | 13 (N 분해 무효, §4) |
+| 110 MHz off | 573 | 505 | +68 | 6 + 86 + 14 = 106 | 38 |
+| **32 MHz warm** | **247** | **220** | **+27** | **0 + 38 + 7 = 45** | 18 (±9, §8.4) |
+| **32 MHz off** | **283** | **252** | **+31** | **0 + 46 + 9 = 55** | 24 |
+
+- off 의 110 → 32 MHz 변화(573 → 283)는 flash 5 WS → 1 WS 효과다. Secure ISR 본문은 86 → 46 이다 [실측].
+  32 MHz 에서 off 와 warm 의 차이가 작다(S 283 vs 247). 1 WS 에서는 캐시의 이득이 작기 때문이다 [도출: 대기 상태가 1].
+- miss 를 뺀 "순수 hit" 추정: 32 MHz warm S ≈ 247 − 5 × 3.5 ≈ 230, N ≈ 220 − 4 × 3.5 ≈ 206, **S − N ≈ +24**.
+  110 MHz 추정(§4.4, +21)과 가깝다 [추정]. 대기 상태와 배치에 무관한 Secure 경로 순 비용은 **약 +21 – +27 사이클**로 본다.
+- 32 MHz 는 D-Box 와 같은 클럭이다 (`BENCH_CLK_32M` 주석). D-Box 비교에는 32 MHz warm 값(+27, 1.12x)과 이 분해를 쓰기를 권한다.

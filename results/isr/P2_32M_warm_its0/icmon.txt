@@ -1,0 +1,5 @@
+# tid hits misses (counted from previous bench_hit to this one; ~1001 iterations)
+10 478327 10568
+11 135404 34
+12 310132 4179
+255 232 1

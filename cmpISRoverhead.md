@@ -517,6 +517,7 @@ stub 은 k=3 빌드에서만 있다. stub 의 두 번째 literal, str, `b` 는 T
 
 > **결과 (2026-11-20 보드 측정): `measureISR_overhead.md`.** warm S−N = +32 (273 vs 241), off +68 (573 vs 505), 둘 다 1.13x.
 > warm 의 N 구간 분해는 1-way ICACHE conflict miss 때문에 쓰지 않는다 (같은 문서 §4).
+> 32 MHz (같은 문서 §8): warm S−N = +27 (247 vs 220), off +31 (283 vs 252), 둘 다 1.12x. warm/off 모두 검증 통과.
 
 ### 12.5 코드 위치
 | 파일 | 내용 |
@@ -527,7 +528,7 @@ stub 은 k=3 빌드에서만 있다. stub 의 두 번째 literal, str, `b` 는 T
 | `Secure/Src/main.c` | `BENCH_ISR_TS` 일 때 CH2 SECM=0, IRQ 30 ITNS=1 |
 | `NonSecure/Src/app_freertos.c` | `App_DmaNotifyOwner()` 분리, doorbell 에 `ISR_TS(4/5)`, k=3 stub |
 | `NonSecure/Src/bench_ns.inc` | `DMA1_Channel2_IRQHandler` (N), `bench_isr_table(id, secure, dma)`, 표 9–12 |
-| `scripts/eval/run_bench.py`, `run_all.sh` | 표 이름, `PHASE=isr` (P2/110MHz/warm, k=0–5) |
+| `scripts/eval/run_bench.py`, `run_all.sh` | 표 이름, `PHASE=isr` (기본 P2/110MHz/warm, k=0–5. `ISR_CLK="110 32"`, `ISR_CACHE="warm off"` 로 조건 선택, warm 은 `icache_mon.py` 도 실행) |
 
 표: 9 `isr_cal_s`, 10 `isr_s`, 11 `isr_cal_n`, 12 `isr_n`. 각 표 1000 행 + 워밍 1 회 (저장 안 함).
 
