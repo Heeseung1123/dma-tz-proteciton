@@ -493,6 +493,46 @@ def fig_runtime_method():
             fontsize=8.3, va="top", color=INK)
     save(fig, "fig12_runtime_method.svg")
 
+# ================================================================== fig 13: NS task stack frame S vs I (result §5.6)
+def fig_frame():
+    import json
+    pr = {b: os.path.join(ROOT, b, "frame_probe.json") for b in ("S_P1", "I_P1")}
+    if not all(os.path.exists(x) for x in pr.values()): print("skip fig13 (no frame_probe.json)"); return
+    P = {b: json.load(open(x)) for b, x in pr.items()}
+    fig, ax = canvas(11, 5.6)
+    ax.text(0.01, 0.99, "NS DMA_Task_A 스택의 가장 깊은 부분 (보드 실측, P1)", fontsize=12, fontweight="bold", va="top")
+    scale = 0.0044                      # figure units per byte (vertical)
+    y_top = 0.80
+    for col, (b, title, x0, accent) in enumerate((("S_P1", "S", 0.08, BLUE), ("I_P1", "I", 0.52, ORANGE))):
+        R = P[b]; hw = R["stackA_highwater_from_top"]
+        sA = [s_ for s_ in R["samples"] if s_["task"] == "DMA_Task_A"]
+        ft = sA[0]["ftype"]; fpca = sA[0]["fpca"]; er = sA[0]["exc_return"]
+        frame = 104 if ft == 0 else 32
+        own = hw - frame
+        segs = [("Task 자신의 프레임\n(vDmaTaskA → MPU_xTaskDelayUntil)", own, NEUTRAL2, INK)]
+        if ft == 0:
+            segs.append(("FP 확장 72 B\ns0–s15 = 0x3f800000 (1.0) × 16\nFPSCR, 예약", 72, MAGENTA, "white"))
+        segs.append(("기본 예외 프레임 32 B\nR0–R3, R12, LR, PC, xPSR", 32, CLUSTER, INK))
+        segs.append(("쓰이지 않음 (0xa5a5a5a5)", 140 - hw if hw < 140 else 8, NS_BG, MUTED))
+        ax.text(x0, y_top + 0.07, f"{title}  ({'Secure 중재자' if title == 'S' else 'Insecure 중재자'})", fontsize=11, fontweight="bold", color=INK)
+        ax.add_patch(Rectangle((x0 - 0.012, y_top - 140 * scale), 0.005, 140 * scale, facecolor=accent, edgecolor="none"))
+        y = y_top
+        for name, n, c, tc in segs:
+            h = n * scale
+            ax.add_patch(Rectangle((x0, y - h), 0.20, h, facecolor=c, edgecolor=NEUTRAL if c == NS_BG else SURF, lw=1.2))
+            ax.text(x0 + 0.10, y - h / 2, name, ha="center", va="center", fontsize=7.6, color=tc)
+            if n and c != NS_BG:
+                ax.text(x0 + 0.205, y - h / 2, f"{n} B", va="center", fontsize=8, color=INK2)
+            y -= h
+        ax.plot([x0 - 0.03, x0 + 0.25], [y_top - hw * scale] * 2, color=INK, lw=1, linestyle=(0, (3, 2)))
+        ax.text(x0 + 0.255, y_top - hw * scale, f"high-water {hw} B", va="center", fontsize=8.5, fontweight="bold")
+        ax.text(x0, y_top + 0.015, "스택 top (높은 주소)", fontsize=7.5, color=MUTED)
+        ax.text(x0, 0.075, f"저장된 EXC_RETURN {er}: FType={ft} ({'확장' if ft == 0 else '기본'} 프레임)\n"
+                f"저장된 CONTROL.FPCA = {fpca}  (30 회 샘플 모두 같음)", fontsize=8.5, color=INK)
+    ax.text(0.01, 0.005, "S: Secure 진입 함수의 복귀 정리(vmov.f32 s0–s15, #1.0)가 FP 상태를 켜 두고(FPCA=1) NS 로 돌아온다. 이후 이 Task 에서 받는 예외는 "
+            "확장 프레임을 쌓는다. Δ = 72 − 8 (Task 프레임 차) = 64 B.", fontsize=8, color=INK2)
+    save(fig, "fig13_task_frame.svg")
+
 for f in (fig_pipeline, fig_paths, fig_regions, fig_components, fig_sram, fig_layout, fig_nsmpu, fig_taskb, fig_classify, fig_addrmap,
-          fig_runtime, fig_runtime_method):
+          fig_runtime, fig_runtime_method, fig_frame):
     f()

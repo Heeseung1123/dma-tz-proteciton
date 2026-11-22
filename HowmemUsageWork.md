@@ -325,6 +325,7 @@ FIG_PNG_DIR=/path python3 -I scripts/eval/mem_figures.py ...   # 검토용 PNG �
 | fig10_address_map | 메모리 영역과 섹션, 사용률 | 이 문서 §4.1 |
 | fig11_runtime | 런타임 힙·스택 사용 S vs I (보드) | 결과 §5.2 |
 | fig12_runtime_method | 런타임 측정 순서, 칠하는 영역, high-water 원리 | 이 문서 §11.3 |
+| fig13_task_frame | NS DMA Task 스택의 가장 깊은 프레임 S vs I (확장/기본) | 결과 §5.6 |
 
 
 ---
@@ -448,6 +449,32 @@ python3 -I scripts/eval/mem_figures.py results/mem docs/figures/mem   # fig11, f
 |---|---|---|---|
 | Secure 힙 최대 사용 | 4176 (P1) | 2096 | Δ +2080 = DMA Task 2 개 x (Secure 스택 1024 + 봉인 8 + 힙 헤더 8) |
 | Secure context 스택 (DMA Task) | 208 / 1024 | 할당 없음 | 중재자 호출 경로의 실제 Secure 스택 깊이 |
-| NS DMA Task 스택 | 128 / 1024 | 64 / 1024 | +64, 원인 미확인 (FP 확장 프레임 추정) |
+| NS DMA Task 스택 | 128 / 1024 | 64 / 1024 | +64 = FP 확장 예외 프레임 +72 − Task 프레임 8 (§11.8 로 확인) |
 | NS 힙, NS MSP, 다른 Task | 같음 | 같음 | 중재자는 NS 커널 자원을 더 쓰지 않는다 |
+
+### 11.8 원인 확인: Task 의 예외 프레임 종류 (`probe_task_frame.py`)
+
+NS DMA Task 스택이 S 에서 64 B 더 깊은 원인을 확인하려고 쓴 스크립트다. 결과는 결과 문서 §5.6, 그림 fig13.
+
+```
+DIR=results/mem/S_P1 N=30 gdb-multiarch -nx -batch -x scripts/eval/probe_task_frame.py   # → $DIR/frame_probe.json
+```
+
+**원리.** Cortex-M33 은 예외에 들어갈 때 하드웨어가 스택에 프레임을 쌓는다. CONTROL.FPCA = 1 (활성 FP 문맥) 이면 R0–xPSR 8 워드에 s0–s15, FPSCR,
+예약 1 워드를 더한 **확장 프레임 26 워드(104 B)**, 아니면 **기본 프레임 8 워드(32 B)** 다. 어느 쪽을 쌓았는지는 EXC_RETURN bit 4 (FType) 에 남는다.
+FreeRTOS 의 CM33 MPU 포트는 Task 를 내릴 때(PendSV) 이 EXC_RETURN 과 CONTROL 을 TCB 의 문맥 배열 끝에 저장한다:
+`stmia r2!, {r0, r3-r5, lr}` = `{xSecureContext, PSP, PSPLIM, CONTROL, EXC_RETURN}` (`portasm.c:327`), 그리고 그 끝 위치를 `*pxTopOfStack` 에 둔다.
+
+**동작 과정.**
+1. 플래시, 리셋, 3 초 실행.
+2. **TCB 찾기.** MPU wrappers v2 에서는 `xTaskCreateRestricted` 가 돌려준 핸들(`globals.hTask`)이 TCB 포인터가 아니라 커널 객체 풀의 번호다
+   (처음에 `hTask` = 2 를 주소로 읽어 실패했다). 그래서 NS 힙(`ucHeap`)에서 `pxStack` 필드가 그 Task 의 스택 배열 주소이고 `pcTaskName` 이 일치하는
+   위치를 찾는다. `pxStack` 오프셋은 gdb 의 `&((TCB_t *)0)->pxStack` 로 얻는다.
+3. **표본.** 0.15–0.55 초 간격으로 30 번 멈춘다. 매번 실행 중이 아닌 Task(`pxCurrentTCB` 가 아닌 것)마다 `*pxTopOfStack` 아래 5 워드를 읽어
+   EXC_RETURN, CONTROL 을 기록한다. 그 아래 8 워드는 하드웨어 프레임 사본이라 PC 로 어디서 멈췄는지 본다.
+4. **스택 덤프.** DMA_Task_A 스택 배열을 읽어 처음으로 `0xa5a5a5a5` 가 아닌 워드부터 40 워드를 기록하고, 플래시 주소처럼 보이는 값은 심볼로 바꾼다.
+5. 같은 과정을 S_P1, I_P1 에 돌린다. Plain_Task 는 두 빌드 모두 NSC 를 부르므로 대조군이 된다.
+
+**주의.** 저장된 PSP 는 비특권 Task 가 시스템 콜 중일 때 TCB 안의 시스템 콜 스택을 가리키므로(이 포트의 MPU wrappers v2 동작) Task 스택 깊이를
+재는 데 쓰지 않는다. 깊이는 §11 의 high-water 로 보고, 이 스크립트는 프레임 **종류**와 **내용**만 본다.
 

@@ -33,7 +33,8 @@
   하나 더 필요하고, 제안 기법은 필요 없다 [코드, §3.5]. 논문의 "NS-MPU 영역을 추가로 사용하지 않는다" 와 일치 [논문].
 - 대가로 S 는 S-MPU 영역 2/8, MPCBB 블록 2, IRQ 라인 1 (doorbell) 을 쓴다 (§3.5).
 - **런타임 (보드 실측, §5):** S 는 Secure 힙을 **+2080 B** 더 쓴다 (DMA Task 2 개의 Secure context, 1040 B/Task). 중재자가 그 Secure 스택에서
-  실제로 쓰는 깊이는 208 B (예약 1024 B). NS DMA Task 스택 high-water 는 +64 B, NS 힙·NS MSP·다른 Task 는 같다. 두 빌드 모두 두 Task 가 전송을 완료했다.
+  실제로 쓰는 깊이는 208 B (예약 1024 B). NS DMA Task 스택 high-water 는 +64 B 인데, 원인은 Secure 진입 함수의 FP 레지스터 정리가 FP 문맥을 켜 두어
+  이후 예외가 FP 확장 프레임(+72 B)을 쌓기 때문임을 보드에서 확인했다 (§5.6). NS 힙·NS MSP·다른 Task 는 같다. 두 빌드 모두 두 Task 가 전송을 완료했다.
 - 측정 중 발견한 기본 빌드의 Task B 주소 오류(S-MPU/MPCBB 가 `Timer_Stack` 을 가리킴)는 수정했다 (§7.5). 측정 수치에는 영향이 없다.
 
 ![영역별 메모리 사용량 S vs I](docs/figures/mem/fig03_regions.svg)
@@ -233,9 +234,9 @@ I 에는 이것들이 없다. 그래서 "보호 기법이 SRAM 을 실제로 얼
   `verify_inst` (0) 만으로는 작다. 나머지는 Task 가 Secure 코드 안에 있을 때 들어온 예외가 PSP_S 에 쌓는 프레임(기본 + FP 확장 + Secure→NS 추가 상태)
   으로 보인다 [추정: 프로파일과 무관하게 같은 값이 그 근거]. 1024 B 예약은 약 5 배 여유. 이 앱에서는 `configMINIMAL_SECURE_STACK_SIZE` 를
   줄여 Secure 힙 비용을 줄일 수 있다 [도출, 시험 안 함].
-- **NS DMA Task 스택 +64 B (128 vs 64).** 정적 프레임은 오히려 S 가 작다 (`vDmaTaskA` 16 vs 24). 원인은 미확인이다. 후보 [추정]:
-  Secure 함수의 복귀 정리(`vmov.f32` s0–s15) 가 FP 상태를 활성(FPCA=1)으로 남겨, 이후 이 Task 위에서 받는 예외가 확장 프레임(26 워드, +72 B)을 쌓는다.
-  확인하려면 Task 스택의 high-water 근처 워드를 덤프해 FP 프레임 모양인지 보면 된다.
+- **NS DMA Task 스택 +64 B (128 vs 64): 원인 확인함 (§5.6).** S 에서는 Secure 진입 함수의 복귀 정리(`vmov.f32` s0–s15, #1.0)가 FP 상태를
+  켠 채(CONTROL.FPCA = 1) NS 로 돌아와, 이후 이 Task 에서 받는 예외가 FP 확장 프레임(104 B)을 쌓는다. I 는 기본 프레임(32 B).
+  72 B 차이에서 Task 자신의 프레임 차(−8 B) 를 빼면 64 B 다 [실측].
 - **Secure MSP:** P1 에서는 I 가 오히려 104 B 더 깊고, P2 에서는 같다. 두 빌드 모두 NS PendSV 안에서 부르는 `SecureContext_Load/SaveContext` 가
   MSP_S 를 쓴다. I 에서는 그 도중에 NS DMA ISR 이 끼어들면 Secure→NS 예외가 되어 추가 상태 컨텍스트까지 MSP_S 에 쌓이고, S 의 완료 ISR 은
   Secure 라 그 추가분이 없다 [추정]. 어느 쪽이든 216 B 이하로 작다.
@@ -266,6 +267,7 @@ dmaStatus 0. Secure MPU 영역 5 = **0x2001ba03 / 0x2001bae1**, MPCBB1 VCTR13 = 
 
 ### 5.5 정적 프레임 교차 확인 (`.su`)
 
+
 | 함수 | 세계 | P1 S | P1 I | P2 S | P2 I |
 |---|---|---|---|---|---|
 | `SECURE_dma_m2m_start` | Secure | 32 | — | 16 | — |
@@ -278,6 +280,49 @@ dmaStatus 0. Secure MPU 영역 5 = **0x2001ba03 / 0x2001bae1**, MPCBB1 VCTR13 = 
 
 함수 하나의 프레임이라 호출 깊이와 예외 프레임은 들어 있지 않다. 런타임 high-water 가 이보다 크고 같은 방향이 아닌 항목(NS DMA Task 스택)은
 §5.3 처럼 예외 프레임 쪽 원인을 의심한다.
+
+### 5.6 NS DMA Task 스택 +64 B 의 원인 (보드 확인)
+
+![NS DMA_Task_A 스택의 가장 깊은 부분 S vs I](docs/figures/mem/fig13_task_frame.svg)
+
+**확인 방법** (`scripts/eval/probe_task_frame.py`, `HowmemUsageWork.md` §11.8). 이 포트는 Task 를 내릴 때 문맥을 TCB 에 저장하고, 끝에
+`{xSecureContext, PSP, PSPLIM, CONTROL, EXC_RETURN}` 을 둔다 (`portasm.c` PendSV). 보드를 30 회 불규칙한 시점에 멈춰 실행 중이 아닌 Task 의
+저장된 EXC_RETURN 과 CONTROL 을 읽었다. EXC_RETURN bit 4 (FType) = 0 이면 하드웨어가 FP 확장 프레임(26 워드 = 104 B)을, 1 이면 기본 프레임
+(8 워드 = 32 B)을 Task 스택에 쌓은 것이다. CONTROL bit 2 (FPCA) = 1 이면 Task 에 활성 FP 문맥이 있다. 마지막에 DMA_Task_A 스택의 가장 깊은
+워드들을 덤프했다. 원자료 `results/mem/{S_P1,I_P1}/frame_probe.json`.
+
+| Task | 빌드 | 저장된 EXC_RETURN | FType | FPCA | 30 회 중 |
+|---|---|---|---|---|---|
+| DMA_Task_A, DMA_Task_B | **S** | `0xFFFFFFAC` | **0 (확장)** | **1** | 30 / 30 |
+| DMA_Task_A, DMA_Task_B | **I** | `0xFFFFFFBC` | 1 (기본) | 0 | 30 / 30 |
+| Plain_Task (두 빌드 모두 `SECURE_LEDToggle` 호출) | S, I | `0xFFFFFFAC` | 0 (확장) | 1 | 30 / 30 |
+
+DMA_Task_A 스택 덤프 (스택 top 기준 바이트, 낮은 주소부터) [실측]:
+
+| top 에서 | S | I |
+|---|---|---|
+| 가장 깊은 곳 | 128: `0x1f4` (R0 = 500 ms), `0x1`, `0x0`, `0x0` (R1–R3), R12, LR = `vDmaTaskA`, PC = `MPU_xTaskDelayUntil`, xPSR `0x29040000` | 64: `0x1f4`, `0x1`, `0x0`, `0x0`, R12, LR = `vDmaTaskA`, PC = `MPU_xTaskDelayUntil`, xPSR `0x21000000` |
+| 그 위 | 96–36: **`0x3f800000` × 16** (s0–s15 = 1.0f), 32: FPSCR `0x0`, 28: 예약 | (FP 부분 없음) |
+| 그 위 | 24–0: Task 생성 때 만든 초기 프레임 일부 | 32–0: 같음 |
+
+해석:
+1. 두 빌드에서 가장 깊은 프레임은 같은 예외다. `vDmaTaskA` 의 `vTaskDelay` 가 `MPU_xTaskDelayUntil` 시스템 콜로 들어갈 때의 하드웨어 프레임이다.
+2. S 에서는 그 프레임이 FP 확장 프레임이고, s0–s15 자리에 **1.0f 가 16 개** 있다. 이 값은 Secure 진입 함수(`__acle_se_SECURE_dma_m2m_start`)가
+   NS 로 돌아가기 직전 CMSE 규칙에 따라 FP 레지스터를 지우는 `vmov.f32 sN, #1.0` 의 결과다 (§7.4 F3, `.list` 에서 확인) [코드].
+   0.0 은 VFP 즉시값으로 표현할 수 없어 GCC 가 1.0 을 쓴다 [코드: 디스어셈블, 이유는 도출].
+3. Secure 에서 FP 명령을 실행하면 CONTROL.FPCA 가 1 이 되고, NS 로 돌아와도 그대로다 (저장된 CONTROL 로 확인) [실측]. 그래서 NS Task 가 FP 를 한 번도
+   쓰지 않는데도 이후 예외가 확장 프레임을 쌓는다.
+4. 크기: 확장 104 B − 기본 32 B = **+72 B**. 그런데 S 의 `vDmaTaskA` 프레임은 I 보다 8 B 작다 (`.su` 16 vs 24, §5.5). 그래서
+   high-water 차이는 72 − 8 = **+64 B** (S: 24 + 104 = 128, I: 32 + 32 = 64) 로 측정값과 정확히 맞는다.
+5. Plain_Task 는 두 빌드 모두 NSC(`SECURE_LEDToggle`) 를 부르므로 두 빌드 모두 FPCA = 1 이고, 스택 사용(120 B) 도 같다. 즉 이 비용은 중재자 고유가 아니라
+   **FP 를 켠 Secure 진입 함수를 부르는 모든 NS Task** 에 생긴다 (대조군).
+
+영향과 선택지 (구현하지 않음):
+- **스택:** NSC 를 부르는 Task 마다 예외 프레임 최대 +72 B. 이 앱의 1024 B 스택에서는 여유가 충분하다.
+- **문맥 전환:** FType = 0 이면 PendSV 가 s16–s31 과 하드웨어가 쌓은 s0–s15·FPSCR 까지 TCB 에 저장·복원한다 (`portasm.c:310-316`). 그만큼 전환 사이클이
+  늘어난다 (이번 측정에서 사이클은 재지 않았다).
+- **줄이는 방법 후보** [추정, 시험 안 함]: Secure 진입 함수를 FP 를 쓰지 않게 빌드해 복귀 정리 자체를 없애는 것, 또는 NS 가 NSC 복귀 뒤 FP 문맥을 끄는 것.
+  둘 다 CMSE 정보 누출 방지 규칙과 충돌하지 않는지 먼저 확인해야 하므로 기록만 한다.
 
 ## 6. 논문과 비교
 
@@ -438,6 +483,8 @@ Task B 수정 후 재측정 값이다 (수정 전과 동일, §7.5). 그림: §1
 | Secure MSP (NS 시작 후) | | 112 | 216 | −104 | 208 | 208 | 0 |
 | NS MSP (NS 시작 후) | | 320 | 320 | 0 | 320 | 320 | 0 |
 | NS 스택 (DMA Task 하나) | 1024 | 128 | 64 | +64 | 128 | 64 | +64 |
+
+NS 스택 +64 B = FP 확장 예외 프레임 +72 B − Task 프레임 −8 B (§5.6).
 
 ### 8.5 자원 (바이트 아님)
 
