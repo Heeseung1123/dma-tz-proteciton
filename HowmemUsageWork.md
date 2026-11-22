@@ -478,3 +478,119 @@ FreeRTOS 의 CM33 MPU 포트는 Task 를 내릴 때(PendSV) 이 EXC_RETURN 과 C
 **주의.** 저장된 PSP 는 비특권 Task 가 시스템 콜 중일 때 TCB 안의 시스템 콜 스택을 가리키므로(이 포트의 MPU wrappers v2 동작) Task 스택 깊이를
 재는 데 쓰지 않는다. 깊이는 §11 의 high-water 로 보고, 이 스크립트는 프레임 **종류**와 **내용**만 본다.
 
+
+### 11.9 GDB 로 직접 확인하기 (FP 확장 프레임, 결과 §5.6)
+
+스크립트 없이 손으로 같은 결론에 도달하는 절차다. 명령은 `scripts/eval/check_fp_frame.gdb` 에 그대로 있다. 보드에서 S_P1, I_P1 로 돌려 아래 출력을 확인했다 (2026-11-22).
+
+**0. 준비**
+
+```bash
+~/st-link.sh &                       # "Waiting for debugger connection..." 이 나올 때까지
+B=S_P1                               # 비교할 때는 I_P1 로 한 번 더
+gdb-multiarch -nx results/mem/$B/FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf
+```
+```
+(gdb) target remote localhost:61234
+(gdb) load results/mem/S_P1/FreeRTOS_SecureIOToggle_TrustZone_Secure.elf
+(gdb) load results/mem/S_P1/FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf
+(gdb) monitor reset
+(gdb) source scripts/eval/check_fp_frame.gdb      # 아래 1–4 단계를 한 번에. 손으로 하려면 단계별 명령을 입력
+```
+`-nx` 는 `~/.gdbinit` (pwndbg) 를 읽지 않게 한다. 한 줄로: `gdb-multiarch -nx -batch <NS.elf> -ex "target remote localhost:61234" -ex "load <S.elf>" -ex "load <NS.elf>" -ex "monitor reset" -ex "source scripts/eval/check_fp_frame.gdb"`.
+
+**1. DMA_Task_A 의 TCB 주소를 얻는다**
+
+```
+(gdb) hbreak app_freertos.c:346          # vDmaTaskA 루프의 App_DmaM2M 호출 줄
+(gdb) ignore 1 2                          # 세 번째 반복에서 멈춤 (Secure 호출을 이미 몇 번 한 뒤)
+(gdb) continue
+Breakpoint 1, App_DmaM2M (g=0x2001b500 <s_dmaTaskMem>, ...) at app_freertos.c:257
+(gdb) set $tcbA = pxCurrentTCB
+(gdb) p $tcbA->pcTaskName                 # "DMA_Task_A"
+(gdb) delete
+```
+- 왜 이렇게 하나: MPU wrappers v2 에서는 `s_dmaTaskMem[0].globals.v.hTask` 가 TCB 주소가 아니라 커널 객체 번호(예: 2)다. Task A 가 실행 중일 때 멈추면
+  `pxCurrentTCB` 가 곧 A 의 TCB 다. 호출이 inline 되어 gdb 는 `App_DmaM2M ... :257` 로 표시하지만 `g = s_dmaTaskMem` (Task A) 이다.
+
+**2. A 가 내려가 있는 순간에 멈춘다**
+
+```
+(gdb) hbreak prvCheckTasksWaitingTermination   # IDLE Task 루프 안의 함수
+(gdb) continue
+(gdb) delete
+(gdb) p/x pxCurrentTCB                          # A 가 아님 → A 의 문맥이 TCB 에 저장돼 있음
+```
+
+**3. 저장된 EXC_RETURN 과 CONTROL 을 읽는다**
+
+이 포트의 PendSV 는 Task 를 내릴 때 문맥 끝에 `{xSecureContext, PSP, PSPLIM, CONTROL, EXC_RETURN}` 를 쓰고, 그 끝 주소를 TCB 의 첫 필드
+(`pxTopOfStack`) 에 둔다 (`portasm.c:327`, `stmia r2!, {r0, r3-r5, lr}` 다음 `str r2, [r1]`).
+
+```
+(gdb) set $end = *(unsigned int *)$tcbA
+(gdb) x/5xw $end - 20
+```
+
+| | S_P1 출력 | I_P1 출력 | 뜻 |
+|---|---|---|---|
+| `$end-20` xSecureContext | `0x00000001` | `0x00000000` | S 는 A 에 Secure context 1 번이 있음, I 는 없음 (A 가 NSC 를 안 부름) |
+| `$end-16` PSP | `0x20018308` | `0x20018350` | 시스템 콜 스택(TCB 안)을 가리킴. Task 스택 깊이 계산에 쓰지 않음 |
+| `$end-12` PSPLIM | `0x20018188` | `0x20018188` | |
+| `$end-8` **CONTROL** | **`0x00000004`** | `0x00000000` | bit 2 = **FPCA**: S 는 1 (FP 문맥 활성), I 는 0 |
+| `$end-4` **EXC_RETURN** | **`0xffffffac`** | `0xffffffbc` | bit 4 = **FType**: S 는 0 (FP 확장 프레임 104 B), I 는 1 (기본 32 B) |
+
+```
+(gdb) p ((*(unsigned*)($end-4)) >> 4) & 1     # FType   S: 0   I: 1
+(gdb) p ((*(unsigned*)($end-8)) >> 2) & 1     # FPCA    S: 1   I: 0
+```
+
+**4. A 의 스택에서 실제 프레임을 본다**
+
+`tasks.c` 가 Task 를 만들 때 스택을 `0xa5` 로 채우므로, 아래에서부터 처음 `0xa5a5a5a5` 가 아닌 워드가 high-water 다.
+
+```
+(gdb) x/32xw (char *)xDmaTaskAStack + sizeof(xDmaTaskAStack) - 128      # 스택 top 아래 128 B, 낮은 주소부터
+(gdb) find /w xDmaTaskAStack, +sizeof(xDmaTaskAStack), 0x3f800000       # 1.0f 찾기
+```
+
+S_P1 출력 (주석은 해석):
+```
+0x2001b3a0 <xDmaTaskAStack+896>:  0x000001f4  0x00000001  0x00000000  0x00000000   ← high-water (top 에서 128 B). R0=500(ms) R1 R2 R3
+0x2001b3b0 <xDmaTaskAStack+912>:  0x08046b44  0x08046b2b  0x08046554  0x29040000   ← R12, LR=vDmaTaskA, PC=MPU_xTaskDelayUntil, xPSR
+0x2001b3c0 <xDmaTaskAStack+928>:  0x3f800000  0x3f800000  0x3f800000  0x3f800000   ← s0–s3   ┐
+0x2001b3d0 <xDmaTaskAStack+944>:  0x3f800000  0x3f800000  0x3f800000  0x3f800000   ← s4–s7   │ FP 확장 부분 72 B:
+0x2001b3e0 <xDmaTaskAStack+960>:  0x3f800000  0x3f800000  0x3f800000  0x3f800000   ← s8–s11  │ s0–s15 = 1.0f (Secure 진입 함수가
+0x2001b3f0 <xDmaTaskAStack+976>:  0x3f800000  0x3f800000  0x3f800000  0x3f800000   ← s12–s15 │ 복귀 직전에 쓴 정리 값)
+0x2001b400 <xDmaTaskAStack+992>:  0x00000000  0x000001f4  0x04040404  0x05050505   ← FPSCR, 예약 ┘ | 그 위: Task 자신의 프레임 (24 B)
+0x2001b410 <xDmaTaskAStack+1008>: 0x06060606  0x08048429  0xa5a5a5a5  0xa5a5a5a5
+16 patterns found.
+```
+
+I_P1 출력:
+```
+0x2001b3a0 ... 0x2001b3d0:        0xa5a5a5a5 ...                                    ← 쓰이지 않음
+0x2001b3e0 <xDmaTaskAStack+960>:  0x000001f4  0x00000001  0x00000000  0x00000000   ← high-water (top 에서 64 B). R0–R3
+0x2001b3f0 <xDmaTaskAStack+976>:  0x12121212  0x08046ab7  0x08046554  0x21000000   ← R12, LR=vDmaTaskA, PC=MPU_xTaskDelayUntil, xPSR (기본 프레임 끝)
+0x2001b400 <xDmaTaskAStack+992>:  0x03030303  0x04040404  0x05050505  0x06060606   ← Task 자신의 프레임 (32 B)
+0x2001b410 <xDmaTaskAStack+1008>: 0x07070707  0x08048451  0xa5a5a5a5  0xa5a5a5a5
+Pattern not found.
+```
+
+읽는 법:
+- 두 빌드 모두 가장 깊은 프레임은 `vTaskDelay` → `MPU_xTaskDelayUntil` 시스템 콜 진입(SVC)의 하드웨어 프레임이다 (PC 가 같음).
+- S 는 그 프레임 위(높은 주소)에 s0–s15, FPSCR, 예약 18 워드(72 B)가 더 있다 = FP 확장 프레임. I 는 R0–xPSR 8 워드뿐이다.
+- 깊이: S = Task 프레임 24 + 104 = 128, I = 32 + 32 = 64 → 차이 64 B.
+- 주소 → 함수 이름은 `info symbol 0x08046554` 로 확인한다 (`MPU_xTaskDelayUntil`).
+
+**5. 1.0f 가 어디서 왔는지 (보드 없이)**
+
+```bash
+arm-none-eabi-objdump -d --disassemble=__acle_se_SECURE_dma_m2m_start \
+    results/mem/S_P1/FreeRTOS_SecureIOToggle_TrustZone_Secure.elf | grep -E "vmov.f32|bxns"
+#  ... vmov.f32 s0, #112 @ 0x3f800000  1.0   (s0–s15 16 줄)  ...  bxns lr
+```
+Secure 진입 함수(CMSE `cmse_nonsecure_entry`)는 NS 로 돌아가기(`bxns`) 직전 Secure 값이 새지 않게 s0–s15 를 덮어쓴다. VFP 즉시값으로 0.0 은
+표현할 수 없어 GCC 는 1.0 을 쓴다. 이 FP 명령이 CONTROL.FPCA 를 1 로 만들고, 그 상태가 NS Task 로 이어진다. I 의 DMA Task 는 Secure 를 부르지
+않으므로 FPCA 가 0 으로 남는다. 대조: Plain_Task 는 두 빌드 모두 `SECURE_LEDToggle` 을 불러 FPCA = 1 이다 (같은 스크립트에서 `$tcbA` 대신
+Plain_Task 의 TCB 를 쓰면 된다, §11.8).

@@ -285,7 +285,8 @@ dmaStatus 0. Secure MPU 영역 5 = **0x2001ba03 / 0x2001bae1**, MPCBB1 VCTR13 = 
 
 ![NS DMA_Task_A 스택의 가장 깊은 부분 S vs I](docs/figures/mem/fig13_task_frame.svg)
 
-**확인 방법** (`scripts/eval/probe_task_frame.py`, `HowmemUsageWork.md` §11.8). 이 포트는 Task 를 내릴 때 문맥을 TCB 에 저장하고, 끝에
+**확인 방법** (`scripts/eval/probe_task_frame.py`, `HowmemUsageWork.md` §11.8). GDB 로 손으로 같은 값을 보는 절차와 출력 해석은
+`HowmemUsageWork.md` §11.9 (`scripts/eval/check_fp_frame.gdb`). 이 포트는 Task 를 내릴 때 문맥을 TCB 에 저장하고, 끝에
 `{xSecureContext, PSP, PSPLIM, CONTROL, EXC_RETURN}` 을 둔다 (`portasm.c` PendSV). 보드를 30 회 불규칙한 시점에 멈춰 실행 중이 아닌 Task 의
 저장된 EXC_RETURN 과 CONTROL 을 읽었다. EXC_RETURN bit 4 (FType) = 0 이면 하드웨어가 FP 확장 프레임(26 워드 = 104 B)을, 1 이면 기본 프레임
 (8 워드 = 32 B)을 Task 스택에 쌓은 것이다. CONTROL bit 2 (FPCA) = 1 이면 Task 에 활성 FP 문맥이 있다. 마지막에 DMA_Task_A 스택의 가장 깊은
