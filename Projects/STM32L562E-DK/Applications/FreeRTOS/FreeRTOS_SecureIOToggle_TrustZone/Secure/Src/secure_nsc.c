@@ -334,7 +334,7 @@ typedef struct {
 /* Best case for the bench (cmpTable.md): Task A Cluster at entry 0 -> hit on the first iteration. */
 const dma_tbl_ent_t g_dma_tbl[DMA_TBL_N] = {
     { 0x2001b700u, 0x100u },   /* 0: Task A Cluster */
-    { 0x2001c000u, 0x100u },   /* 1: Task B Cluster */
+    { 0x2001ba00u, 0x100u },   /* 1: Task B Cluster */
     { 0u, 0u }, { 0u, 0u }, { 0u, 0u },
     { 0u, 0u }, { 0u, 0u }, { 0u, 0u },
 };
@@ -342,7 +342,7 @@ const dma_tbl_ent_t g_dma_tbl[DMA_TBL_N] = {
 const dma_tbl_ent_t g_dma_tbl[DMA_TBL_N] = {
     { 0u, 0u }, { 0u, 0u }, { 0u, 0u },
     { 0u, 0u }, { 0u, 0u }, { 0u, 0u },
-    { 0x2001c000u, 0x100u },   /* 6: Task B Cluster (main.c DMA_TASK_B_CLUSTER_*) */
+    { 0x2001ba00u, 0x100u },   /* 6: Task B Cluster (main.c DMA_TASK_B_CLUSTER_BASE = A + 0x300) */
     { 0x2001b700u, 0x100u },   /* 7: Task A Cluster (main.c DMA_TASK_A_CLUSTER_*) */
 };
 #endif

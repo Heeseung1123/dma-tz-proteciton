@@ -421,7 +421,7 @@ void Secure_TZIC_Init(void)
  * 테이블/링커 섹션을 쓰지 않기로 했기 때문):
  *   arm-none-eabi-nm Projects/.../NonSecure/Debug/FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf \
  *       | grep -E " s_dmaTaskMem$"
- * 결과(2026-11-01, 재측정):
+ * 결과(2026-11-01, 재측정. 아래 주소는 당시 값이다. 현재 기본 빌드는 s_dmaTaskMem = 0x2001b600):
  *   2001ae00 00000600 b s_dmaTaskMem
  *     [A] globals 0x2001ae00-eff, cluster 0x2001af00-fff, guard 0x2001b000-0ff
  *     [B] globals 0x2001b100-1ff, cluster 0x2001b200-2ff, guard 0x2001b300-3ff
@@ -432,25 +432,27 @@ void Secure_TZIC_Init(void)
  * TTAT 는 통과) len 이 Cluster 를 넘어가면(공격 시나리오 (b), end 가 guard 안) 영역이
  * 무효/불일치가 되어 거부되게 하기 위함이다.
  */
+/* Only Task A's Cluster is hardcoded (checked by check_layout.sh via s_dmaTaskMem). Task B's is
+ * derived: B = A + sizeof(dma_task_mem_t) = A + 0x300 (globals 256 + Cluster 256 + guard 256,
+ * fixed by the _Static_asserts in app_freertos.c). The old literal B = 0x2001c000 did not match
+ * the layout and tagged Timer_Stack instead (docs/gap-analysis.md G-2, fixed 2026-11-22). */
+#define DMA_TASK_MEM_STRIDE       0x300u
 #if defined(EVAL_MEM)
 /* Memory evaluation build (cmpMemUsage.md): ucPrivateBuffer/ulLookupTable are not built, so
- * s_dmaTaskMem moves to 0x2001b500 (check_layout.sh, LAYOUT_EXPECT). Both Clusters are taken from
- * that layout: A = base + 0x100, B = base + 0x300 + 0x100. (The default build's Task B value
- * 0x2001c000 does not match its own layout: docs/gap-analysis.md G-2.) */
+ * s_dmaTaskMem moves to 0x2001b500 (check_layout.sh, LAYOUT_EXPECT). */
 #define DMA_TASK_A_CLUSTER_BASE   0x2001b600u
-#define DMA_TASK_B_CLUSTER_BASE   0x2001b900u
 #else
 #define DMA_TASK_A_CLUSTER_BASE   0x2001b700u
-#define DMA_TASK_B_CLUSTER_BASE   0x2001c000u
 #endif
+#define DMA_TASK_B_CLUSTER_BASE   (DMA_TASK_A_CLUSTER_BASE + DMA_TASK_MEM_STRIDE)   /* 0x2001ba00 (EVAL_MEM: 0x2001b900) */
 #define DMA_TASK_A_CLUSTER_SIZE   0x100u                                      /* 256B */
 #define DMA_TASK_A_CLUSTER_LIMIT  (DMA_TASK_A_CLUSTER_BASE + DMA_TASK_A_CLUSTER_SIZE - 1u)
-#define DMA_TASK_A_GUARD_BASE     (DMA_TASK_A_CLUSTER_BASE + DMA_TASK_A_CLUSTER_SIZE) /* 0x2001b800 */
+#define DMA_TASK_A_GUARD_BASE     (DMA_TASK_A_CLUSTER_BASE + DMA_TASK_A_CLUSTER_SIZE) /* 0x2001b800 (EVAL_MEM: 0x2001b700) */
 #define DMA_TASK_A_SMPU_REGION    4u
 
 #define DMA_TASK_B_CLUSTER_SIZE   0x100u                                      /* 256B */
 #define DMA_TASK_B_CLUSTER_LIMIT  (DMA_TASK_B_CLUSTER_BASE + DMA_TASK_B_CLUSTER_SIZE - 1u)
-#define DMA_TASK_B_GUARD_BASE     (DMA_TASK_B_CLUSTER_BASE + DMA_TASK_B_CLUSTER_SIZE) /* 0x2001c100 */
+#define DMA_TASK_B_GUARD_BASE     (DMA_TASK_B_CLUSTER_BASE + DMA_TASK_B_CLUSTER_SIZE) /* 0x2001bb00 (EVAL_MEM: 0x2001ba00) */
 #define DMA_TASK_B_SMPU_REGION    5u
 
 #if (DMA_TASK_A_GUARD_BASE & 0xFFu) || (DMA_TASK_B_GUARD_BASE & 0xFFu)

@@ -106,7 +106,10 @@ CH2 는 중재자와 가드 검사 없이 NS 가 직접 쓴다. 기본 빌드와
    `DMA_TASK_B_CLUSTER_BASE = 0x2001c000` (가드 0x2001c100) 이지만, 기본 빌드에서 `s_dmaTaskMem` = 0x2001b600 이므로 실제 B Cluster 는 0x2001ba00 이다
    [코드: nm]. 0x2001c000–0x2001c1ff 는 `Timer_Stack` (0x2001bc50–0x2001c44f) 안이라, (a) Task B 의 `verify_inst` 는 TTT 영역이 무효라 거부될 것이고,
    (b) Timer 태스크 스택의 256B 블록이 MPCBB Secure 가 되어 NS 쓰기가 무시된다 [도출, 보드 미확인]. 9679590 부터 있던 값이다 (`g_dma_tbl` 항목 6 도 같은 값).
-   BENCH 빌드는 Task B 를 suspend 하므로 측정에는 드러나지 않았다. **결정 필요: 기본 빌드를 0x2001ba00 으로 고칠지.**
+   BENCH 빌드는 Task B 를 suspend 하므로 측정에는 드러나지 않았다.
+   **수정 (2026-11-22, 사용자 승인):** `DMA_TASK_B_CLUSTER_BASE = DMA_TASK_A_CLUSTER_BASE + 0x300` (= sizeof(dma_task_mem_t)) 로 계산하게 바꿨다
+   → 기본 빌드 B Cluster 0x2001ba00, 가드 0x2001bb00. `g_dma_tbl` 의 B 항목(기본 6, BENCH_TBL_BEST 1)도 0x2001ba00. 변경 전/후 Secure 기본 빌드 차이는
+   리터럴 4 워드뿐이다 (SMPU 설정의 B limit/base/guard, `g_dma_tbl` 항목 6). 명령·심볼·NS 이미지는 동일 [코드]. 보드 확인 절차: `cmpMemUsage_result.md` §7.5.
    `EVAL_MEM` 빌드는 자기 배치(0x2001b500)에서 A = 0x2001b600, B = 0x2001b900 을 쓰고, `mem_measure.py` 가 Secure 리터럴과 NS 배치를 대조한다.
 3. **`EVAL_MEM` 에서 `s_dmaTaskMem` 이 0x100 내려간다.** 코드가 접근하지 않는 `ucPrivateBuffer` (256B) 를 빼서다. 그래서 `EVAL_MEM` 빌드 전용 Cluster 주소와
    `LAYOUT_EXPECT=2001b500` 검사를 두었다 (`build_variant.sh`).
