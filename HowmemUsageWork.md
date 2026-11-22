@@ -9,15 +9,13 @@
 
 ## 0. 전체 흐름
 
-```
- 소스 (기본 빌드는 그대로)                       빌드 4 개                          측정                         문서
- ─────────────────────────────    build_variant.sh     ┌────────────┐  mem_measure.py   ┌──────────────────┐
- EVAL_MEM          : 벤치·비교 대상·  ──────────────────► │ S_P1  I_P1 │ ────────────────► │ <빌드>/layout.md │
-                     미사용 데이터 제외   (gcc 래퍼로       │ S_P2  I_P2 │  readelf / map /  │ summary.md       │──► cmpMemUsage_result.md
- MEDIATOR_INSECURE : I 빌드              -O 치환 + -D)    └────────────┘  nm / objdump /   │ components.csv   │
-                                                          results/mem/     gdb (정적)       └──────────────────┘
- 기본 빌드 불변 확인: ref_default_P1 (변경 전) vs chk_default_P1 (변경 후) → loadcmp.sh
-```
+![메모리 측정 흐름](docs/figures/mem/fig01_pipeline.svg)
+
+1. 소스에 매크로 두 개(`EVAL_MEM`, `MEDIATOR_INSECURE`)를 넣는다. 매크로가 없는 기본 빌드는 그대로다.
+2. `build_variant.sh` 가 매크로·프로파일 조합으로 4 개 빌드(S_P1, I_P1, S_P2, I_P2)를 만들어 `results/mem/` 에 복사한다.
+3. `mem_measure.py` 가 ELF 와 map 을 읽어 영역·구성요소별 크기를 내고, 검사를 하고, 표와 빌드별 레이아웃을 쓴다.
+4. 아래 줄: 매크로 없이 만든 기본 빌드 두 개(변경 전/후)를 `loadcmp.sh` 로 비교해 기본 빌드가 바뀌지 않았음을 확인한다.
+5. `mem_figures.py` 가 같은 ELF/map 에서 그림을 만든다 (§10).
 
 측정은 전부 **정적**이다. 보드에 올리지 않고 링커 산출물(ELF, map)만 읽는다. 보드가 필요한 런타임 항목(힙·스택)은
 `cmpMemUsage_result.md` §5 에 절차만 있다.
@@ -32,6 +30,8 @@
 | 매크로 | `EVAL_MEM` | `EVAL_MEM MEDIATOR_INSECURE` |
 | 같게 둔 것 | 태스크 3 개, 8 B M2M, 주기, mutex, `App_DmaNotifyOwner` 통지, 비특권 DMA Task | |
 
+![요청 경로와 완료 경로: S vs I](docs/figures/mem/fig02_s_vs_i_paths.svg)
+
 같은 애플리케이션에서 **중재자와 보호 장치만** 다르게 하는 것이 목표다. 그래서 I 는 S 의 코드를 재사용한다:
 요청 함수는 `SECURE_dma_m2m_start` 에서 `verify_inst` 와 `s_busy` 를 뺀 것, ISR 은 ISR 벤치의 Insecure 기준선 ISR
 (`bench_ns.inc` 의 `DMA1_Channel2_IRQHandler`) 을 CH1 로 옮긴 것이다.
@@ -42,6 +42,8 @@ S 에서는 레지스터를 Secure 코드가 쓰므로 문제가 없다. I 에�
 `PRIVDEFENA` 로만 켜서(`port.c:1007`) 비특권 접근에는 기본 맵이 없다. 그래서 DMA Task 의 비어 있던 `xRegions[2]` (= NS-MPU 영역 7) 에
 `0x40020000 + 32 B` (DMA1 ISR, IFCR, CH1 CCR/CNDTR/CPAR/CM0AR/CM1AR) 를 `RW | Device | XN` 으로 준다.
 이 영역 하나 때문에 **I 는 NS-MPU 사용자 영역 3/3, S 는 2/3** 을 쓴다. 결과의 NS-MPU 표는 이것을 보여 준다.
+
+![NS-MPU 영역 사용 S vs I](docs/figures/mem/fig07_nsmpu.svg)
 
 ---
 
@@ -63,9 +65,12 @@ S 에서는 레지스터를 Secure 코드가 쓰므로 문제가 없다. I 에�
 
 BENCH 코드(`bench_*.inc`, `SECURE_bench_*`, CH2 ISR)는 `BENCH_PHASE`/`BENCH_ISR_TS` 를 안 주면 원래 빠진다.
 
+![DMA 배치 S vs I](docs/figures/mem/fig06_dma_layout.svg)
+
 **부작용과 대응 (B1):** `ucPrivateBuffer` 가 `.bss` 에서 `s_dmaTaskMem` 앞에 있어서, 빼면 `s_dmaTaskMem` (`aligned(256)`) 이
 0x2001b600 → 0x2001b500 으로 내려간다. Secure `main.c` 는 Cluster 주소를 하드코딩하므로 `EVAL_MEM` 전용 값을 둔다:
-A = 0x2001b600, B = 0x2001b900 (= base + 0x100, base + 0x300 + 0x100). 기본 빌드 값은 그대로다 (기본 빌드 B 값의 불일치는 F1).
+A = 0x2001b600. B 는 Task B 수정(878635f) 이후 모든 빌드에서 `A + 0x300` 으로 계산된다 (0x2001b900). 기본 빌드는 A = 0x2001b700, B = 0x2001ba00
+(결과 문서 §7.5).
 
 ### 2.2 `MEDIATOR_INSECURE` (I 빌드만)
 
@@ -119,6 +124,8 @@ python3 -I scripts/eval/mem_measure.py [results/mem]      # 실패 검사가 있
 
 ### 4.1 섹션 → 메모리 영역 (`readelf -SW`)
 
+![메모리 영역과 측정 단위](docs/figures/mem/fig10_address_map.svg)
+
 alloc(`A` 플래그) 섹션만 본다. 각 섹션의 VMA 를 링커 스크립트 MEMORY 영역에 넣는다:
 
 | 영역 | 범위 | 들어가는 섹션 |
@@ -145,6 +152,8 @@ map 의 "Linker script and memory map" 이후를 읽어 `(출력 섹션, 입력 
   문자열 병합(맵은 병합 전 크기, M5). 잔차도 차분 대상이다.
 
 ### 4.3 S − I 차분과 구성요소 분류
+
+![map 입력 섹션 → 차분 → 구성요소](docs/figures/mem/fig09_classify.svg)
 
 두 빌드의 입력 섹션 표를 키별로 비교해 **크기가 다른 것만** 남긴다. 각 행을 고정 매핑 표(`COMP`, 세계 + 입력 섹션 정규식 + 오브젝트 정규식)로
 C1–C10 에 넣는다:
@@ -182,7 +191,7 @@ C1–C10 에 넣는다:
 | NSC 허용 목록 | `nm` 에서 0x0C03E000–0x0C03FFFF 의 함수 심볼 = S 12 개 / I 10 개 정확히 | 벤치·비교 대상 진입점이 남는 것 |
 | 금지 심볼 | `bench`, `verify_table`, `start_table`, `dma_tbl`, `nop3`, `g_tzic_sr3`, `ucPrivateBuffer`, `ulLookupTable`, 강한 `DMA1_Channel2_IRQHandler` | 제외 대상이 남는 것 (정규식을 좁힌 이유 M4) |
 | 미참조 함수 | `secure_nsc.o`, `main.o`, `app_freertos.o` 의 모든 함수가 `objdump -d` 의 분기 대상, 적재 섹션의 32 비트 워드(벡터, 함수 포인터, `|1` 포함), NSC stub 의 `__acle_se_` 분기 중 하나에서 참조되는지 | 실행되지 않는 코드가 측정에 섞이는 것 |
-| S-MPU 하드코딩 대조 (S 만) | NS 배치에서 계산한 Cluster A/B 주소가 Secure 전체 리터럴 중 `(word & ~0x1F)` (RBAR BASE) 와 일치하는지 | Secure 가 엉뚱한 주소를 태그한 빌드를 재는 것 (-O1 inline 때문에 전체 리터럴을 본다, M6. 기본 빌드에서는 F1 을 잡는 검사) |
+| S-MPU 하드코딩 대조 (S 만) | NS 배치에서 계산한 Cluster A/B 주소가 Secure 전체 리터럴 중 `(word & ~0x1F)` (RBAR BASE) 와 일치하는지 | Secure 가 엉뚱한 주소를 태그한 빌드를 재는 것 (-O1 inline 때문에 전체 리터럴을 본다, M6). 기본 빌드에 돌리면 Task B 오류(F1)를 잡는다: 수정 전 B 불일치, 수정 후 일치 |
 | 미분류 차이 0 | §4.3 | 설명되지 않은 바이트 |
 
 ### 4.6 출력
@@ -216,14 +225,25 @@ C1–C10 에 넣는다:
 
 ## 6. 기본 빌드가 바뀌지 않았는지 확인
 
-1. 소스 수정 **전에** 기본 빌드를 만든다: `scripts/eval/build_variant.sh mem ref_default_P1 P1` (매크로 없음).
+1. 소스 수정 **전에** 기본 빌드를 만든다: `scripts/eval/build_variant.sh mem ref_default_P1 P1` (매크로 없음). 이 기준은 fe98482 (측정 코드 넣기 전) 빌드다.
 2. 수정 후 같은 명령으로 `chk_default_P1` 을 만든다.
-3. `scripts/eval/loadcmp.sh results/mem/{ref,chk}_default_P1/FreeRTOS_SecureIOToggle_TrustZone_{Secure,NonSecure}.elf` → 둘 다 `same`.
+3. `scripts/eval/loadcmp.sh results/mem/{ref,chk}_default_P1/FreeRTOS_SecureIOToggle_TrustZone_{Secure,NonSecure}.elf`.
 
 ELF 파일 자체를 `cmp` 하면 다르다 (M2): `#if` 줄이 행 번호를 바꿔 디버그 정보 크기와 섹션 헤더 오프셋이 달라진다.
 `loadcmp.sh` 는 적재되는 바이트(alloc PROGBITS 섹션 내용)와 심볼 표(주소, 크기, 이름)만 비교한다. 이 둘이 같으면 보드에서 실행되는 이미지가 같다 [도출].
 
----
+**결과의 변화.** 측정 코드 커밋(2a9ad1f) 시점에는 Secure, NS 모두 `same` 이었다. Task B 수정(878635f) 이후에는 의도한 변경이 들어갔으므로
+**NS 는 `same`, Secure 는 `DIFF`** 가 정상이다. 그 차이가 의도한 것뿐인지는 이렇게 본다:
+
+```bash
+diff <(arm-none-eabi-objdump -d results/mem/ref_default_P1/*_Secure.elf | tail -n +4) \
+     <(arm-none-eabi-objdump -d results/mem/chk_default_P1/*_Secure.elf | tail -n +4)     # B 리터럴 3 개만
+diff <(arm-none-eabi-objdump -s -j .rodata results/mem/ref_default_P1/*_Secure.elf | tail -n +4) \
+     <(arm-none-eabi-objdump -s -j .rodata results/mem/chk_default_P1/*_Secure.elf | tail -n +4)  # g_dma_tbl 항목 6 만
+diff <(arm-none-eabi-nm -n -S results/mem/ref_default_P1/*_Secure.elf) <(arm-none-eabi-nm -n -S results/mem/chk_default_P1/*_Secure.elf)  # 없음
+```
+
+재측정에서는 측정 빌드 4 개를 수정 전 복사본과 `loadcmp.sh` 로 비교했다 (8/8 `same`). 수치가 바뀌지 않았다는 근거다.
 
 ## 7. 처음부터 재현
 
@@ -241,6 +261,8 @@ scripts/eval/build_variant.sh mem chk_default_P1 P1
 for w in Secure NonSecure; do scripts/eval/loadcmp.sh results/mem/{ref,chk}_default_P1/FreeRTOS_SecureIOToggle_TrustZone_$w.elf; done
 # 측정 + 문서 생성 (exit 0 이어야 함)
 python3 -I scripts/eval/mem_measure.py results/mem
+# 그림 (docs/figures/mem/*.svg). FIG_PNG_DIR 을 주면 검토용 PNG 도 쓴다
+python3 -I scripts/eval/mem_figures.py results/mem docs/figures/mem
 # Debug/ 를 기본 빌드로 되돌림
 ./build.sh clean && ./build.sh
 ```
@@ -267,6 +289,38 @@ I 빌드가 실제로 동작하는지(기능 확인)와 런타임 사용량(R1�
 | `cmpMemUsage_result.md` | 결과, 측정 중 수정·발견 사항(§7), 전체 측정값(§8) |
 | `HowmemUsageWork.md` | 이 문서 |
 | `scripts/eval/{build_variant.sh,check_layout.sh,mem_measure.py,loadcmp.sh}` | 빌드·검사·측정 |
+| `scripts/eval/mem_figures.py`, `docs/figures/mem/fig01–fig10.svg` | 그림 (§10) |
 | `results/mem/` | 빌드 산출물(manifest 만 커밋), `layout.md`, `summary.md`, `components.csv` |
 | `docs/gap-analysis.md` G | 논문 밖 기준선, 기본 빌드 Task B 하드코딩 불일치(G-2), 기타 |
 | `*.bak_before_memsuage` | 수정 전 원본 (`secure_nsc.c`, `main.c`, `secure_nsc.h`, `app_freertos.c`, `build_variant.sh`, `check_layout.sh`) |
+
+---
+
+## 10. 그림 생성: `mem_figures.py`
+
+```
+python3 -I scripts/eval/mem_figures.py [results/mem] [docs/figures/mem]
+FIG_PNG_DIR=/path python3 -I scripts/eval/mem_figures.py ...   # 검토용 PNG 사본 (커밋하지 않음)
+```
+
+- `mem_measure.py` 를 import 해서 **같은 ELF/map 에서** 수치를 읽는다. 측정을 다시 하면 그림도 다시 만들면 된다. 손으로 적은 수치는 없다.
+  주소가 나오는 그림(fig06 배치, fig07 NS-MPU, fig08 Task B)도 nm/gdb 로 읽은 값으로 그린다.
+- 차트는 dataviz 지침을 따른다: 가로 막대(기준선 쪽은 각지고 값 쪽 끝 4 px 둥글게), 1 px 가는 격자, 범례 항상 표시, 값은 막대 옆에 직접 표기,
+  축 하나 (이중 축 없음). 색은 기준 팔레트 슬롯 순서 그대로: S = 파랑, I = 주황, P1 = 청록, P2 = 노랑, 가드 = 자홍, 패딩 = 초록, fill = 보라.
+  Node.js 가 없어 팔레트 검증 스크립트는 이 환경에서 다시 돌리지 못했다 (기준 팔레트 문서의 검증 결과에 의존).
+- 정적 SVG 라 hover 는 없다. 대신 모든 그림의 값이 결과 문서 표에 있다. 배경을 밝은 색으로 고정해 GitHub 다크 테마에서도 읽힌다.
+- 글꼴: Noto Sans CJK `.ttc` 를 직접 등록하고 SVG 글자는 path 로 저장한다 (M8). 그래서 파일이 50–100 KB 정도다.
+
+| 그림 | 내용 | 쓰는 곳 |
+|---|---|---|
+| fig01_pipeline | 측정 흐름 | 이 문서 §0 |
+| fig02_s_vs_i_paths | S/I 요청·완료 경로 (Secure/NS 구분) | 결과 §2, 이 문서 §1, 계획 §2 |
+| fig03_regions | 영역별 사용량 S vs I, P1/P2 | 결과 §1 |
+| fig04_components | 구성요소별 Δ Flash / Δ SRAM, P1 vs P2 | 결과 §3.2 |
+| fig05_sram_breakdown | SRAM +1096 B 구성 (가드/패딩/fill/변수) | 결과 §3.3 |
+| fig06_dma_layout | `s_dmaTaskMem` 배치, NS-MPU/S-MPU/MPCBB 표시 | 결과 §3.6, 이 문서 §2.1, 계획 §2 |
+| fig07_nsmpu | DMA Task NS-MPU 8 영역 사용 | 결과 §3.5, 이 문서 §1.1 |
+| fig08_taskb_fix | Task B 주소 수정 전/후 | 결과 §7.5 |
+| fig09_classify | map → 차분 → 구성요소, 검사 | 이 문서 §4.3 |
+| fig10_address_map | 메모리 영역과 섹션, 사용률 | 이 문서 §4.1 |
+

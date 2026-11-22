@@ -40,6 +40,8 @@
   Insecure 기준선 ISR(`DMA1_Channel2_IRQHandler`)과 같은 것을 CH1 로 옮긴 것이다 (기존 코드 재사용, 규칙 0).
   `s_busy` 는 Secure 채널이라 생기는 상태로 보고 I 에서 뺀다 (ISR 기준선과 같은 판단, `bench_ns.inc:150`).
 
+![요청 경로와 완료 경로: S vs I](docs/figures/mem/fig02_s_vs_i_paths.svg)
+
 ### 2.2 구성요소별 대응 (무엇이 S 에만 있는가)
 | # | 구성요소 | S | I | 위치 [코드] |
 |---|---|---|---|---|
@@ -53,6 +55,8 @@
 | C8 | NS 쪽 통지 설정 | doorbell `NVIC_SetPriority/EnableIRQ` | DMA1_CH1 IRQ 우선순위/Enable | `vCreateAppTasks` |
 | C9 | Secure context (런타임) | DMA Task 2개가 `portALLOCATE_SECURE_CONTEXT` → Secure 힙에서 각 1024B 스택 + 컨텍스트 | DMA Task 는 NSC 를 부르지 않으므로 할당 안 함. Plain_Task 는 `SECURE_LEDToggle` 때문에 두 빌드 모두 할당 | `app_freertos.c` |
 | C10 | 하드웨어 자원 (바이트 아님) | S-MPU 영역 2/8, MPCBB 블록 2, IRQ 라인 1 (doorbell), Secure DMA 채널 | 없음 | §6.4 에 표로만 기록 |
+
+![DMA 배치 S vs I (측정 결과 기준)](docs/figures/mem/fig06_dma_layout.svg)
 
 C7 의 I 배치 근거: NS-MPU (ARMv8-M) 영역은 base/limit 32B 정렬이면 된다 [도출]. globals 를 256B 로 채운 것과
 `aligned(256)` 은 가드(MPCBB 256B 블록) 정렬 때문이므로 [코드 주석, app_freertos.c:105] 보호가 없는 I 에는 필요 없다.
