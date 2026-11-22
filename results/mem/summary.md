@@ -62,8 +62,8 @@
 
 | 세계 | 출력 섹션 | 입력 섹션 | 오브젝트 | S | I | Δ | 구성요소 |
 |---|---|---|---|---|---|---|---|
-| NonSecure | `.rodata` | `*fill*` |  | 28 | 36 | -8 | C10 |
 | NonSecure | `.bss` | `*fill*` |  | 163 | 39 | +124 | C10 |
+| NonSecure | `.rodata` | `*fill*` |  | 28 | 36 | -8 | C10 |
 | NonSecure | `.bss` | `.bss.s_dmaStatusWord` | app_freertos.o | 4 | 0 | +4 | C4 |
 | NonSecure | `.text` | `.text.DFSDM1_FLT3_IRQHandler` | app_freertos.o | 116 | 0 | +116 | C4 |
 | NonSecure | `.text` | `.text.DMA1_Channel1_IRQHandler` | app_freertos.o | 0 | 152 | -152 | C4 |
@@ -72,8 +72,8 @@
 | NonSecure | `.text` | `.text.vDmaTaskA` | app_freertos.o | 112 | 116 | -4 | C9 |
 | Secure | `.text` | `.text.verify_inst` | secure_nsc.o | 50 | 0 | +50 | C1 |
 | Secure | `.gnu.sgstubs` | `(ALIGN/문자열 병합, 맵 미표시)` |  | 0 | 16 | -16 | C10 |
-| Secure | `.text` | `*fill*` |  | 18 | 16 | +2 | C10 |
 | Secure | `.bss` | `*fill*` |  | 3 | 0 | +3 | C10 |
+| Secure | `.text` | `*fill*` |  | 18 | 16 | +2 | C10 |
 | Secure | `.text` | `.text.SECURE_dma_m2m_start` | secure_nsc.o | 240 | 0 | +240 | C2 |
 | Secure | `.text` | `.text` | libgcc.a(cmse.o) | 216 | 0 | +216 | C3 |
 | Secure | `.text` | `.text.NVIC_ClearTargetState` | secure_nsc.o | 112 | 0 | +112 | C3 |
@@ -166,8 +166,8 @@
 
 | 세계 | 출력 섹션 | 입력 섹션 | 오브젝트 | S | I | Δ | 구성요소 |
 |---|---|---|---|---|---|---|---|
-| NonSecure | `.rodata` | `*fill*` |  | 28 | 36 | -8 | C10 |
 | NonSecure | `.bss` | `*fill*` |  | 163 | 39 | +124 | C10 |
+| NonSecure | `.rodata` | `*fill*` |  | 28 | 36 | -8 | C10 |
 | NonSecure | `.bss` | `.bss.s_dmaStatusWord` | app_freertos.o | 4 | 0 | +4 | C4 |
 | NonSecure | `.text` | `.text.DFSDM1_FLT3_IRQHandler` | app_freertos.o | 116 | 0 | +116 | C4 |
 | NonSecure | `.text` | `.text.DMA1_Channel1_IRQHandler` | app_freertos.o | 0 | 152 | -152 | C4 |
@@ -176,8 +176,8 @@
 | NonSecure | `.text` | `.text.vDmaTaskA` | app_freertos.o | 112 | 116 | -4 | C9 |
 | Secure | `.text` | `.text.verify_inst` | secure_nsc.o | 46 | 0 | +46 | C1 |
 | Secure | `.gnu.sgstubs` | `(ALIGN/문자열 병합, 맵 미표시)` |  | 0 | 16 | -16 | C10 |
-| Secure | `.text` | `*fill*` |  | 16 | 14 | +2 | C10 |
 | Secure | `.bss` | `*fill*` |  | 3 | 0 | +3 | C10 |
+| Secure | `.text` | `*fill*` |  | 16 | 14 | +2 | C10 |
 | Secure | `.text` | `.text.SECURE_dma_m2m_start` | secure_nsc.o | 296 | 0 | +296 | C2 |
 | Secure | `.text` | `.text` | libgcc.a(cmse.o) | 216 | 0 | +216 | C3 |
 | Secure | `.text` | `.text.SECURE_dma_m2m_init` | secure_nsc.o | 304 | 0 | +304 | C3 |

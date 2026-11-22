@@ -409,5 +409,90 @@ def fig_addrmap():
             fontsize=8, color=INK2)
     save(fig, "fig10_address_map.svg")
 
-for f in (fig_pipeline, fig_paths, fig_regions, fig_components, fig_sram, fig_layout, fig_nsmpu, fig_taskb, fig_classify, fig_addrmap):
+# ================================================================== fig 11: runtime results (result §5)
+def fig_runtime():
+    import json
+    pth = os.path.join(ROOT, "runtime_summary.json")
+    if not os.path.exists(pth): print("skip fig11 (no runtime_summary.json)"); return
+    R = json.load(open(pth))
+    groups = [("힙 최대 사용", [("secure_heap", "Secure 힙"), ("ns_heap", "NS 힙")]),
+              ("스택 최대 깊이", [("msp_s", "Secure MSP"), ("ctx:DMA_Task_A", "Secure ctx DMA_Task_A"),
+                                ("ctx:DMA_Task_B", "Secure ctx DMA_Task_B"), ("ctx:Plain_Task", "Secure ctx Plain_Task"),
+                                ("msp_ns", "NS MSP"), ("task:DMA_Task_A", "NS 스택 DMA_Task_A"),
+                                ("task:DMA_Task_B", "NS 스택 DMA_Task_B")])]
+    profs = [p for p in ("P1", "P2") if p in R]
+    fig, axes = plt.subplots(2, len(profs), figsize=(11, 6.6), gridspec_kw={"height_ratios": [2, 7]}, squeeze=False)
+    fig.subplots_adjust(wspace=0.32, hspace=0.42, top=0.86, bottom=0.10, left=0.17, right=0.97)
+    for row, (gname, items) in enumerate(groups):
+        xmax = max((R[p][w].get(k) or 0) for p in profs for w in "SI" for k, _ in items) * 1.45
+        for col, prof in enumerate(profs):
+            ax = axes[row][col]
+            ax.set_xlim(0, xmax); ax.set_ylim(len(items) - 0.4, -0.6)
+            ax.set_yticks(range(len(items))); ax.set_yticklabels([l for _, l in items] if col == 0 else [""] * len(items), fontsize=8.5)
+            ax.tick_params(axis="y", length=0); ax.tick_params(axis="x", labelsize=8)
+            ax.xaxis.grid(True, color=GRID, lw=1); ax.set_axisbelow(True); ax.spines["left"].set_visible(False)
+            ax.set_title(f"{gname} — {prof}", pad=6, fontsize=10)
+            for k, (key, _) in enumerate(items):
+                sv, iv = R[prof]["S"].get(key), R[prof]["I"].get(key)
+                for off, v, c in ((-0.17, sv, BLUE), (0.17, iv, ORANGE)):
+                    if v is None:
+                        ax.text(xmax * 0.01, k + off, "할당 없음", va="center", fontsize=7.5, color=MUTED)
+                    else:
+                        hbar(ax, k + off, 0, v, 0.30, c)
+                        ax.text(v + xmax * 0.012, k + off, f"{v:,}", va="center", fontsize=7.5, color=INK2)
+            ax.set_xlabel("바이트", fontsize=8)
+    fig.text(0.17, 0.95, "런타임 SRAM 사용 (보드 실측, 60 초, 반복 최댓값)", fontsize=12, fontweight="bold")
+    fig.text(0.17, 0.015, "MSP 는 NS 시작 후 사용분 (NS 첫 명령 시점의 MSP 부터 가장 깊은 곳까지). Secure context 는 Secure 힙 안의 Task 별 Secure 스택.",
+             fontsize=8, color=INK2)
+    legend(fig, [("S (Secure 중재자)", BLUE), ("I (Insecure 중재자)", ORANGE)], 0.97, 0.985, loc="upper right")
+    save(fig, "fig11_runtime.svg")
+
+# ================================================================== fig 12: runtime method (How §11)
+def fig_runtime_method():
+    fig, ax = canvas(11, 5.4)
+    ax.text(0.01, 0.99, "런타임 측정 순서 (run_runtime.py, 빌드 하나)", fontsize=12, fontweight="bold", va="top")
+    steps = [("① 플래시 + 리셋", "Secure → NS ELF\nmonitor reset", NS_BG),
+             ("② NS 첫 명령에서 정지", "hbreak Reset_Handler\nSecure 부팅 끝,\nNS 미실행", NS_BG),
+             ("③ 칠하기 0xa5a5a5a5", "Secure ucHeap 전체\nSecure MSP 아래쪽\nNS MSP", "#f6e3ec"),
+             ("④ 60 초 실행", "브레이크포인트 없음\n(계측 간섭 없음)", NS_BG),
+             ("⑤ 정지 후 읽기", "힙 카운터\n스택 긁기 (high-water)", SEC_BG),
+             ("⑥ 10 초 완료 횟수", "NS 완료 ISR hbreak\n+ ignore 카운트", NS_BG),
+             ("⑦ Secure 안에서 정지", "S-MPU 영역 4·5\nMPCBB VCTR13", SEC_BG)]
+    w = 0.128; x = 0.01
+    for i, (t, d, c) in enumerate(steps):
+        box(ax, x, 0.66, w, 0.22, f"{t}\n\n{d}", fc=c, fs=7.8)
+        if i < len(steps) - 1: arrow(ax, x + w, 0.77, x + w + 0.014, 0.77)
+        x += w + 0.014
+    ax.text(0.01, 0.58, "③ 에서 칠하는 Secure SRAM (S_P1 주소, 아래 = 낮은 주소)", fontsize=9.5, fontweight="bold")
+    # Secure SRAM map (vertical strip, not to scale)
+    segs = [(".data/.bss 앞부분", NEUTRAL2, 0.035), ("ucHeap 10 KB — 전체 칠함\n뒤에 Secure context 스택 1 KB 씩 잘려 나감", "#f6e3ec", 0.13),
+            (".bss 나머지 + ._user_heap_stack", NEUTRAL2, 0.04), ("MSP_S 영역 — [_end, MSP_S − 64) 칠함", "#f6e3ec", 0.15),
+            ("부팅 프레임 + 64 B (칠하지 않음)", NEUTRAL, 0.04)]
+    y = 0.06
+    for name, c, h in segs:
+        ax.add_patch(Rectangle((0.03, y), 0.30, h, facecolor=c, edgecolor=SURF, lw=1.5))
+        ax.text(0.18, y + h / 2, name, ha="center", va="center", fontsize=7.6)
+        y += h
+    ax.text(0.03, 0.035, "0x30000000", fontsize=7, color=MUTED); ax.text(0.03, y + 0.008, "_estack 0x30018000", fontsize=7, color=MUTED)
+    # scan illustration
+    ax.text(0.40, 0.58, "⑤ 긁기: 낮은 끝에서 위로, 처음 깨진 워드 = 최대 깊이", fontsize=9.5, fontweight="bold")
+    sx, sw = 0.42, 0.10
+    for k in range(10):
+        used = k >= 6
+        ax.add_patch(Rectangle((sx, 0.06 + k * 0.045), sw, 0.04, facecolor=CLUSTER if used else "#f6e3ec", edgecolor=SURF, lw=1.2))
+        ax.text(sx + sw / 2, 0.08 + k * 0.045, "값" if used else "a5a5a5a5", ha="center", va="center", fontsize=7)
+    arrow(ax, sx - 0.02, 0.07, sx - 0.02, 0.33, color=INK2)
+    ax.text(sx - 0.025, 0.20, "스캔", ha="right", va="center", fontsize=8, color=INK2)
+    ax.plot([sx + sw + 0.01, sx + sw + 0.03], [0.06 + 6 * 0.045] * 2, color=INK, lw=1)
+    ax.text(sx + sw + 0.035, 0.06 + 6 * 0.045, "high-water", va="center", fontsize=8)
+    ax.text(sx + sw + 0.035, 0.06 + 10 * 0.045, "스택 시작 (top)", va="top", fontsize=8, color=INK2)
+    ax.text(sx + sw + 0.035, 0.07, "스택 끝 (limit)", va="center", fontsize=8, color=INK2)
+    ax.text(0.68, 0.50, "사용량 = top − high-water\n\n• NS Task 스택: tasks.c 가 생성 때 0xa5 로 채움\n  → 칠하지 않고 긁기만\n"
+            "• Secure context 스택: 채워지지 않음\n  → 할당 전에 ucHeap 전체를 칠함\n• MSP: 아무도 채우지 않음 → 직접 칠함\n\n"
+            "• 힙: xMinimumEverFreeBytesRemaining\n  (부팅 이후 최소 잔량) 으로 최대 사용",
+            fontsize=8.3, va="top", color=INK)
+    save(fig, "fig12_runtime_method.svg")
+
+for f in (fig_pipeline, fig_paths, fig_regions, fig_components, fig_sram, fig_layout, fig_nsmpu, fig_taskb, fig_classify, fig_addrmap,
+          fig_runtime, fig_runtime_method):
     f()

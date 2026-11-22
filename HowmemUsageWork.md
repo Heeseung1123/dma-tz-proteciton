@@ -323,4 +323,131 @@ FIG_PNG_DIR=/path python3 -I scripts/eval/mem_figures.py ...   # 검토용 PNG �
 | fig08_taskb_fix | Task B 주소 수정 전/후 | 결과 §7.5 |
 | fig09_classify | map → 차분 → 구성요소, 검사 | 이 문서 §4.3 |
 | fig10_address_map | 메모리 영역과 섹션, 사용률 | 이 문서 §4.1 |
+| fig11_runtime | 런타임 힙·스택 사용 S vs I (보드) | 결과 §5.2 |
+| fig12_runtime_method | 런타임 측정 순서, 칠하는 영역, high-water 원리 | 이 문서 §11.3 |
+
+
+---
+
+## 11. 런타임 SRAM 측정 (보드): `run_runtime.py`
+
+결과는 `cmpMemUsage_result.md` §5, 집계 `results/mem/runtime.md`.
+
+### 11.1 왜 따로 재야 하나
+
+정적 측정(§4)은 링커가 **예약한** 크기만 본다. 그런데 이 설계의 메모리 비용 중 일부는 예약 크기에 드러나지 않는다.
+
+| 항목 | 정적 측정에서 보이는 것 | 실제로 달라지는 것 |
+|---|---|---|
+| Secure 힙 (`secure_heap.c` `ucHeap`, 10 KB) | S, I 모두 10240 B 예약 → Δ 0 | S 의 DMA Task 는 NSC 를 부르므로 `portALLOCATE_SECURE_CONTEXT` 로 Secure context(스택 1024 B + 봉인 8 B + 힙 헤더)를 하나씩 받는다. I 의 DMA Task 는 받지 않는다 |
+| Secure context 스택 | 보이지 않음 (힙 안에서 런타임에 잘라 씀) | 중재자(`SECURE_dma_m2m_start` → `verify_inst`)가 실제로 몇 바이트를 쓰는지 |
+| Secure MSP | 보이지 않음 (`._user_heap_stack` 이후 영역) | S 만 Secure DMA ISR 과 `GTZC_IRQHandler` 가 MSP_S 를 쓴다. 둘 다 NS 핸들러(PendSV)에서 부르는 `SecureContext_Load/Save` 도 MSP_S 를 쓴다 |
+| NS Task 스택, NS MSP | 배열 크기만 보임 (1024/2048 B) | NSC 호출(veneer, cmse 정리) 과 NS ISR 본문 차이가 실제 깊이에 주는 영향 |
+| NS 힙 (`heap_4.c`, 8 KB) | 예약만 보임 | TCB·큐 할당. 두 빌드 같을 것으로 예상 |
+
+즉 "보호 기법이 SRAM 을 얼마나 더 **쓰는가**" 와 "예약한 크기가 충분한가" 는 실행해야 알 수 있다.
+정적 Δ(+1096 B) 에 더해 S 는 Secure 힙에서 DMA Task 수만큼 context 를 더 소비한다.
+
+### 11.2 원리
+
+**(1) 힙: 할당기 자체의 카운터.** 두 힙 모두 FreeRTOS heap_4 계열이라 `xFreeBytesRemaining` (현재 남은 양) 과
+`xMinimumEverFreeBytesRemaining` (부팅 이후 가장 적게 남았던 양) 을 유지한다 [코드: `secure_heap.c:142-143`, `heap_4.c`].
+최대 사용량 = 힙 크기 − `xMinimumEverFreeBytesRemaining`. 두 변수는 `static` 이라 심볼 주소(`nm`)로 직접 읽는다.
+
+**(2) 스택: 칠하고 실행하고 긁는다 (high-water mark).**
+스택은 높은 주소에서 낮은 주소로 자란다. 스택 영역 전체를 알려진 값(`0xa5a5a5a5`)으로 채워 두고 실행한 뒤, 낮은 쪽 끝에서부터
+처음으로 패턴이 아닌 워드를 찾으면 그곳이 지금까지 스택이 내려간 가장 깊은 곳이다. 사용량 = 스택 위 끝 − 그 주소.
+
+```
+높은 주소  ┌──────────────┐ ← 스택 시작 (top)
+           │ 사용된 값    │
+           │ …            │
+           │ (최대 깊이)  │ ← 처음으로 패턴이 깨진 워드 = high-water
+           │ a5a5a5a5     │
+           │ a5a5a5a5     │   한 번도 쓰이지 않음
+낮은 주소  └──────────────┘ ← 스택 끝 (limit), 여기서부터 위로 스캔
+```
+
+- **NS Task 스택**은 FreeRTOS 가 Task 생성 때 이미 `0xa5` 로 채운다 (`tasks.c:1835`, `tskSET_NEW_STACKS_TO_KNOWN_VALUE`,
+  이 설정에서는 `configCHECK_FOR_STACK_OVERFLOW = 2` 라 켜짐). 그래서 칠할 필요 없이 긁기만 한다.
+- **Secure context 스택**은 `SecureContext_AllocateContext` 가 `pvPortMalloc` 으로 Secure 힙에서 잘라 쓰고 **채우지 않는다**
+  (`secure_context.c:225-238`: 위쪽 봉인 값 8 B 와 CONTROL 워드만 쓴다). 그래서 **할당 전에 Secure 힙 전체를 칠한다**.
+  할당기는 블록 헤더만 쓰므로 칠한 값이 스택 부분에 그대로 남는다.
+- **MSP (Secure, NS)** 도 아무도 채우지 않으므로 직접 칠한다.
+
+**(3) 언제 칠하나: NS 의 첫 명령.** NS `Reset_Handler` 첫 명령에 하드웨어 브레이크포인트를 건다. 이 순간은
+- Secure 부팅(`main` → GTZC/MPCBB/S-MPU 설정 → `NonSecure_Init` → BLXNS) 은 끝났고,
+- NS 는 아직 한 명령도 실행하지 않았다: Task 도, Secure context 할당도, Secure 힙 초기화도 아직 없다.
+그래서 Secure 힙 전체, Secure MSP 의 아래쪽, NS MSP 를 안전하게 칠할 수 있다.
+Secure MSP 는 이때 `main` → `NonSecure_Init` 의 프레임이 위쪽에 살아 있으므로 현재 MSP_S − 64 B 까지만 칠한다 (§11.4).
+
+**(4) 계측 간섭을 피한다.** 스택을 재는 동안에는 브레이크포인트를 하나도 두지 않는다. DMA 완료 횟수는 스택을 다 읽은 **뒤에**
+따로 센다 (§11.4 의 M9).
+
+### 11.3 코드와 동작 과정
+
+`scripts/eval/run_runtime.py` (gdb 파이썬 스크립트) 가 한 빌드를 다음 순서로 잰다.
+
+![런타임 측정 순서](docs/figures/mem/fig12_runtime_method.svg)
+
+| 단계 | 하는 일 | 코드 (요지) |
+|---|---|---|
+| 0 | 두 ELF 의 심볼 주소를 `nm` 으로 읽는다 (Secure 쪽은 심볼 파일을 올리지 않고 주소로만 접근) | `SS, NN = nm(S_ELF), nm(NS_ELF)` |
+| 1 | gdbserver 연결, Secure → NS 순서로 플래시, 리셋 | `target remote localhost:61234`, `load`, `monitor reset` |
+| 2 | NS `Reset_Handler` 에 hbreak, 도달하면 MSP_S 를 읽는다 | `hbreak *0x%x % NN['Reset_Handler']`, `$msp_s` |
+| 3 | 칠하기: Secure `ucHeap` 전체, Secure `[_end, MSP_S − 64)`, NS `[_end, _estack − 64)` | `paint(lo, hi)` = 1 KB 단위 `write_memory` |
+| 4 | 브레이크포인트 없이 `SECS` 초 실행 후 정지 | `threading.Timer` → `gdb.post_event(interrupt)` |
+| 5 | 힙 카운터, `xTickCount` 읽기 | `rd(SS['xMinimumEverFreeBytesRemaining'])` 등 |
+| 6 | Secure context: `xSecureContexts[8]` 의 `{pucCurrentStackPointer, pucStackLimit, pucStackStart, pvTaskHandle}` 를 읽어 할당된 것마다 `[limit, start)` 를 긁는다. Task 이름은 `pvTaskHandle` (NS TCB) 의 `pcTaskName` | `scan(lim, start)`, `((TCB_t *)h)->pcTaskName` |
+| 7 | MSP_S, MSP_NS 를 긁는다. 보고서는 **NS 시작 후 사용** = (NS 첫 명령 시점 MSP) − (가장 깊이 닿은 주소) 를 쓴다 (M12) | `msp(painted, _estack)`, 보고서 `run_use()` |
+| 8 | NS Task 스택 5 개 (`xDmaTaskAStack`, `xDmaTaskBStack`, `xPlainTaskStack`, `Idle_Stack.*`, `Timer_Stack.*`) 를 긁는다 | `scan(a, a + n)` |
+| 9 | 기능 확인: NS 완료 ISR 에 hbreak + ignore 카운트로 `CSECS` 초 동안 완료 횟수를 센다. 두 Task 의 Cluster 8 B, `dmaDone/dmaStatus`, DMA1_CH1 CCR | S: `DFSDM1_FLT3_IRQHandler`, I: `DMA1_Channel1_IRQHandler` |
+| 10 | S 만: Secure 코드 안(`__acle_se_SECURE_dma_m2m_start`)에서 멈춰 Secure MPU 영역 4, 5 와 MPCBB1 VCTR13 을 읽는다 | `0xE000ED98` (RNR) ← 4/5, `0xE000ED9C` (RBAR, RLAR), `0x50032D34` |
+| 11 | `$DIR/runtime$REP.json` 저장, detach | |
+
+`scripts/eval/mem_runtime_report.py` 가 빌드 쌍(S_Px, I_Px)의 json 과 `.su` (§11.5) 를 합쳐 `results/mem/runtime.md` 와
+`runtime_summary.json` (그림 fig11 의 입력) 을 만든다. 반복 측정(`REP=_2`) 이 있으면 반복 중 최댓값을 쓰고, 값이 다르면 범위를 괄호로 적는다.
+이번 측정에서는 모든 값이 두 반복에서 같았다.
+
+### 11.4 주의점과 고친 것
+
+| # | 현상 | 원인 | 조치 |
+|---|---|---|---|
+| M9 | 첫 시험에서 Secure MSP 깊이가 5 초 실행 두 번에 168 B / 48 B 로 달랐다 | 완료 횟수를 세는 브레이크포인트가 NS ISR 안에서 코어를 매번 멈춘다. 그동안 다른 인터럽트가 pending 되어 중첩·tail-chain 양상이 바뀐다 | 스택 측정 구간(60 초)에는 브레이크포인트를 두지 않고, 다 읽은 뒤 10 초 동안 따로 센다. 빌드마다 2 회 반복 |
+| M10 | 처음에 S-MPU 영역 4 가 `0x2001c6c3` 로 읽혔다 (Cluster 가 아님) | MPU 레지스터는 Secure/NS 로 뱅크되어 있고, 디버거 접근은 코어가 멈춘 보안 상태의 뱅크를 본다. NS 에서 멈춰서 **NS-MPU** (FreeRTOS 의 Task 스택 영역) 가 보였다 | Secure 코드(`__acle_se_SECURE_dma_m2m_start`) 안에서 멈춘 뒤 읽는다 → `0x2001b603/0x2001b6e1` |
+| M11 | NS 벡터 테이블(0x08040004) 을 읽어 `Reset_Handler` 를 얻으려 했는데 0 이 읽혔다 | 이 시점 디버거의 플래시 NS alias 읽기가 0 을 돌려줬다. 원인 미확인 | ELF 심볼 `Reset_Handler` 주소를 쓴다 |
+| M12 | `_estack` 기준 MSP 깊이가 빌드마다 부팅 프레임 크기만큼 달랐다 | Secure `main` 프레임 크기가 빌드마다 다르다 | 지표를 "NS 시작 후 사용" 으로 바꿨다 |
+| M13 | pwndbg 가 올라와 정지마다 문맥을 출력했다 | 사용자 `~/.gdbinit` | `gdb-multiarch -nx` |
+| — | MSP_S 위쪽 64 B + 부팅 프레임은 칠하지 않는다 | 칠할 때 살아 있는 프레임(`main` → `NonSecure_Init`)을 덮으면 Secure `main` 이 망가진다 | 64 B 여유 아래까지 실제로 쓰였으면(스캔 결과 > 0) 그 64 B 도 지나간 것이므로 "NS 시작 후 사용" 은 정확하다. 부팅 프레임(빌드마다 232–328 B)은 NS 실행과 무관해 제외한다 (M12) |
+| — | IDLE Task 도 Secure context 를 가진다 | FreeRTOS `prvIdleTask` 가 삭제된 Task 의 context 를 정리하려고 스스로 할당한다 (`tasks.c:5920`) | 두 빌드 같음 |
+| — | 디버거로 읽은 S 의 DMA1_CH1 CCR 이 `0x20000` (SECM 만) | Secure 채널의 레지스터는 NS alias(0x40020008) 로 읽으면 SECM 외에는 0 으로 보인다 [실측] | 기능 확인에는 Cluster 내용과 `dmaDone` 을 쓴다 |
+| — | 시스템 콜 스택(MPU wrappers v2, 비특권 Task 당 TCB 안 128 워드)은 재지 않았다 | TCB 를 만들 때 0 으로 지워지고(`tasks.c:1298`) 패턴으로 채워지지 않아 high-water 를 믿을 수 없다 | 범위 밖. 두 빌드 모두 DMA Task 가 비특권이라 같은 경로 |
+
+### 11.5 정적 스택 교차 확인 (`.su`)
+
+`-fstack-usage` 가 함수마다 프레임 크기를 `*.su` 로 남긴다 (`static` = 고정, `dynamic` = 가변). `build_variant.sh` 가 이 파일을
+`results/mem/<빌드>/su/{Secure,NonSecure}/` 에 복사하고 (`.gitignore` 대상), 보고서가 중재자·ISR·DMA Task 함수의 프레임을 표로 만든다.
+호출 깊이는 더하지 않으므로 런타임 high-water 의 하한 성격이다. 런타임 값과 크게 어긋나면 측정을 의심한다.
+
+### 11.6 재현
+
+```bash
+~/st-link.sh &                          # gdbserver, localhost:61234 ("Waiting for debugger connection...")
+for rep in "" _2; do for v in S_P1 I_P1 S_P2 I_P2; do
+  DIR=results/mem/$v SECS=60 CSECS=10 REP=$rep gdb-multiarch -nx -batch -x scripts/eval/run_runtime.py
+done; done
+python3 -I scripts/eval/mem_runtime_report.py results/mem      # → results/mem/runtime.md
+python3 -I scripts/eval/mem_figures.py results/mem docs/figures/mem   # fig11, fig12 포함
+```
+
+`-nx` 는 사용자 `~/.gdbinit` (pwndbg) 를 읽지 않게 한다. 빌드 하나에 약 80 초 (플래시 + 60 초 + 10 초 + Secure 정지).
+
+### 11.7 측정 결과 요약 (상세: 결과 문서 §5)
+
+| 항목 | S | I | 의미 |
+|---|---|---|---|
+| Secure 힙 최대 사용 | 4176 (P1) | 2096 | Δ +2080 = DMA Task 2 개 x (Secure 스택 1024 + 봉인 8 + 힙 헤더 8) |
+| Secure context 스택 (DMA Task) | 208 / 1024 | 할당 없음 | 중재자 호출 경로의 실제 Secure 스택 깊이 |
+| NS DMA Task 스택 | 128 / 1024 | 64 / 1024 | +64, 원인 미확인 (FP 확장 프레임 추정) |
+| NS 힙, NS MSP, 다른 Task | 같음 | 같음 | 중재자는 NS 커널 자원을 더 쓰지 않는다 |
 

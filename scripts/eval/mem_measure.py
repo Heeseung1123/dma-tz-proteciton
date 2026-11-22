@@ -248,7 +248,7 @@ def diff(S, I):
             if ww != w: continue
             ri = I.resid.get((w, o), 0)
             if r != ri: rows.append((w, o, "(ALIGN/문자열 병합, 맵 미표시)", "", r, ri, "C10"))
-    rows.sort(key=lambda r: (r[0], r[6] or "Z", r[2]))
+    rows.sort(key=lambda r: (r[0], r[6] or "Z", r[2], r[1], r[3]))   # full key: deterministic order
     return rows
 
 def flash_sram(w, outsec, secs):

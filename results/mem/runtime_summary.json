@@ -1,0 +1,114 @@
+{
+ "P1": {
+  "S": {
+   "secure_heap": 4176,
+   "ns_heap": 2792,
+   "ctx:DMA_Task_A": 208,
+   "ctx:DMA_Task_B": 208,
+   "ctx:Plain_Task": 56,
+   "ctx:IDLE": 4,
+   "msp_s": 112,
+   "msp_ns": 320,
+   "task:DMA_Task_A": 128,
+   "task:DMA_Task_B": 128,
+   "task:Plain_Task": 120,
+   "task:IDLE": 72,
+   "task:Tmr Svc": 120
+  },
+  "I": {
+   "secure_heap": 2096,
+   "ns_heap": 2792,
+   "ctx:Plain_Task": 56,
+   "ctx:IDLE": 4,
+   "msp_s": 216,
+   "msp_ns": 320,
+   "task:DMA_Task_A": 64,
+   "task:DMA_Task_B": 64,
+   "task:Plain_Task": 120,
+   "task:IDLE": 72,
+   "task:Tmr Svc": 120
+  }
+ },
+ "P2": {
+  "S": {
+   "secure_heap": 4168,
+   "ns_heap": 2792,
+   "ctx:DMA_Task_A": 208,
+   "ctx:DMA_Task_B": 208,
+   "ctx:Plain_Task": 16,
+   "ctx:IDLE": 4,
+   "msp_s": 208,
+   "msp_ns": 320,
+   "task:DMA_Task_A": 128,
+   "task:DMA_Task_B": 128,
+   "task:Plain_Task": 120,
+   "task:IDLE": 72,
+   "task:Tmr Svc": 120
+  },
+  "I": {
+   "secure_heap": 2088,
+   "ns_heap": 2792,
+   "ctx:Plain_Task": 16,
+   "ctx:IDLE": 4,
+   "msp_s": 208,
+   "msp_ns": 320,
+   "task:DMA_Task_A": 64,
+   "task:DMA_Task_B": 64,
+   "task:Plain_Task": 120,
+   "task:IDLE": 72,
+   "task:Tmr Svc": 120
+  }
+ },
+ "default": {
+  "functional": {
+   "taskA": {
+    "dst": "0x2001b700",
+    "dst8": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7
+    ],
+    "dmaDone": 1,
+    "dmaStatus": 0
+   },
+   "taskB": {
+    "dst": "0x2001ba00",
+    "dst8": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7
+    ],
+    "dmaDone": 1,
+    "dmaStatus": 0
+   },
+   "dma1_ch1_ccr": "0x20000",
+   "halted_in_secure_at": "0xc000e68",
+   "smpu": {
+    "4": [
+     "0x2001b703",
+     "0x2001b7e1"
+    ],
+    "5": [
+     "0x2001ba03",
+     "0x2001bae1"
+    ]
+   },
+   "mpcbb1_vctr13": "0x9000000"
+  },
+  "completions": {
+   "secs": 10,
+   "hits": 30,
+   "ticks": 8538
+  }
+ }
+}

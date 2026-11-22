@@ -32,6 +32,8 @@
 - **NS-MPU:** S 는 DMA Task 당 NS-MPU 사용자 영역 2/3 개, I 는 3/3 개를 쓴다. 보호 없는 일반 FreeRTOS-MPU 방식(패턴 3)은 DMA 레지스터용 영역이
   하나 더 필요하고, 제안 기법은 필요 없다 [코드, §3.5]. 논문의 "NS-MPU 영역을 추가로 사용하지 않는다" 와 일치 [논문].
 - 대가로 S 는 S-MPU 영역 2/8, MPCBB 블록 2, IRQ 라인 1 (doorbell) 을 쓴다 (§3.5).
+- **런타임 (보드 실측, §5):** S 는 Secure 힙을 **+2080 B** 더 쓴다 (DMA Task 2 개의 Secure context, 1040 B/Task). 중재자가 그 Secure 스택에서
+  실제로 쓰는 깊이는 208 B (예약 1024 B). NS DMA Task 스택 high-water 는 +64 B, NS 힙·NS MSP·다른 Task 는 같다. 두 빌드 모두 두 Task 가 전송을 완료했다.
 - 측정 중 발견한 기본 빌드의 Task B 주소 오류(S-MPU/MPCBB 가 `Timer_Stack` 을 가리킴)는 수정했다 (§7.5). 측정 수치에는 영향이 없다.
 
 ![영역별 메모리 사용량 S vs I](docs/figures/mem/fig03_regions.svg)
@@ -183,24 +185,99 @@ FreeRTOS ARM_CM33 포트의 NS-MPU 8 개 중 0–3 은 커널 고정, 4 는 태�
 | 배치 | S: `s_dmaTaskMem` = 0x2001b500 (`LAYOUT_EXPECT`), Secure 리터럴의 S-MPU BASE 가 NS Cluster 주소 A/B 와 일치 |
 | 재측정 (Task B 수정 후, 878635f) | 4 빌드 모두 수정 전 빌드와 적재 내용·심볼 동일 (8/8), `summary.md` 동일. 기본 빌드는 Secure 리터럴 4 워드만 다르고 NS 동일 (§7.5) |
 | 빌드 경고 | 기본 빌드와 같은 링커 RWX 경고만 (신규 경고 없음) |
-| 보드 실행 | **미실행.** I 빌드의 기능 확인과 R1–R5 는 §5 |
+| 보드 실행 | §5: 4 빌드 x 2 회 60 초 실행, 두 빌드 모두 두 Task 전송 완료, 기본 빌드 Task B 수정도 보드에서 확인 |
 
-## 5. 미측정: 런타임 SRAM (보드 필요)
+## 5. 런타임 SRAM (보드 실측)
 
-정적 예약이 같은 항목의 실제 사용량이다. 두 빌드(`S_P1`, `I_P1`) 를 각각 올리고 약 60 초 실행(Task A 100 회 이상 전송) 후 멈춰서 잰다.
+측정일 2026-11-22. 보드 STM32L562E-DK (ST-LINK V3, `~/st-link.sh`). 빌드는 §3 과 같은 `S_P1`, `I_P1`, `S_P2`, `I_P2`
+(측정 빌드 이미지는 §4 의 재측정 빌드와 동일). 빌드마다 **60 초 실행 x 2 회**. 원자료 `results/mem/<빌드>/runtime{,_2}.json`,
+집계 `results/mem/runtime.md` (`python3 -I scripts/eval/mem_runtime_report.py results/mem`). 측정 원리·코드·동작 과정은
+`HowmemUsageWork.md` §11.
 
-| ID | 항목 | GDB (Secure ELF 심볼은 `add-symbol-file` 로 함께 로드) | 기대 |
-|---|---|---|---|
-| 기능 | 전송 반복 | S: `x/8xb 0x2001b600` / I: `x/8xb 0x2001b4a0` → `00 01 .. 07`. `p s_dmaTaskMem[0].globals.v` → `dmaDone = 1, dmaStatus = 0`. `b App_DmaNotifyOwner` 가 반복해서 걸림 | 둘 다 동작 |
-| 기능 (I) | 채널 NS | `p/x *(uint32_t*)0x40020008` 의 bit17 (SECM) = 0, `p/x *(uint32_t*)0xE000E380` (NVIC_ITNS0) bit29 = 1 | |
-| 기능 (S) | S-MPU | `set *(uint32_t*)0xE000ED98 = 4` 후 `x/2xw 0xE000ED9C` → `0x2001b603 0x2001b6e1` (영역 5: `0x2001b903 0x2001b9e1`) | 리터럴 대조와 일치 [도출] |
-| R1 | Secure 힙 | `p xFreeBytesRemaining`, `p xMinimumEverFreeBytesRemaining` (secure_heap.c) | S 가 I 보다 Secure context 2 개분 (스택 1024 x 2 + 헤더) 더 씀 [도출] |
-| R2 | NS 힙 | NS `xFreeBytesRemaining`, `xMinimumEverFreeBytesRemaining` | 같음 [추정] |
-| R3 | NS Task 스택 | 각 스택 배열(`xDmaTaskAStack`, `xDmaTaskBStack`, `xPlainTaskStack`, 1024 B)을 `x/256xw` 로 덤프해 낮은 주소부터 `0xa5a5a5a5` 가 끝나는 위치를 찾는다 (`configCHECK_FOR_STACK_OVERFLOW=2` 라 생성 시 채워짐) | 두 빌드 비슷 [추정] |
-| R4 | Secure 스택 | Secure context 스택(Secure 힙 안)과 MSP_S 를 부팅 직후 패턴으로 채우고 실행 후 스캔 | S 만 DMA Task 의 Secure context 사용 |
-| R5 | 정적 스택 | `*.su` (빌드 디렉터리, `-fstack-usage`) | 보드 없이 가능, 다음 커밋에서 집계 |
+### 5.1 왜 재야 하나
 
-(측정 후 기입)
+정적 측정은 링커가 **예약한** 크기만 본다. Secure 힙(10 KB), Task 스택 배열, MSP 는 두 빌드에서 예약 크기가 같아 정적 Δ 가 0 이다.
+그런데 S 에서는
+- DMA Task 가 NSC 를 부르므로 Task 마다 **Secure context** (Secure 쪽 Task 스택) 를 Secure 힙에서 받고,
+- 중재자와 `verify_inst` 는 그 Secure 스택 위에서 돌고,
+- 완료 ISR 이 Secure 에서 돌아 **MSP_S** 를 쓴다.
+I 에는 이것들이 없다. 그래서 "보호 기법이 SRAM 을 실제로 얼마나 더 쓰는가" 와 "예약한 크기가 충분한가" 는 실행해야만 알 수 있다.
+
+### 5.2 결과
+
+![런타임 SRAM 사용 S vs I](docs/figures/mem/fig11_runtime.svg)
+
+값은 2 회 반복의 최댓값이다. **모든 항목에서 두 반복이 같은 값**이었다 [실측].
+
+| 항목 (최대 사용, 바이트) | 예약 | P1 S | P1 I | P1 Δ | P2 S | P2 I | P2 Δ |
+|---|---|---|---|---|---|---|---|
+| **Secure 힙** | 10240 | 4176 | 2096 | **+2080** | 4168 | 2088 | **+2080** |
+| NS 힙 | 8192 | 2792 | 2792 | 0 | 2792 | 2792 | 0 |
+| Secure context 스택 DMA_Task_A | 1024 (각) | 208 | 할당 없음 | | 208 | 할당 없음 | |
+| Secure context 스택 DMA_Task_B | 1024 | 208 | 할당 없음 | | 208 | 할당 없음 | |
+| Secure context 스택 Plain_Task | 1024 | 56 | 56 | 0 | 16 | 16 | 0 |
+| Secure context 스택 IDLE | 1024 | 4 | 4 | 0 | 4 | 4 | 0 |
+| Secure MSP (NS 시작 후) | — | 112 | 216 | −104 | 208 | 208 | 0 |
+| NS MSP (NS 시작 후) | 최소 1024 (`_Min_Stack_Size`) | 320 | 320 | 0 | 320 | 320 | 0 |
+| **NS 스택 DMA_Task_A** | 1024 | 128 | 64 | **+64** | 128 | 64 | **+64** |
+| **NS 스택 DMA_Task_B** | 1024 | 128 | 64 | **+64** | 128 | 64 | **+64** |
+| NS 스택 Plain_Task | 1024 | 120 | 120 | 0 | 120 | 120 | 0 |
+| NS 스택 IDLE / Tmr Svc | 2048 | 72 / 120 | 72 / 120 | 0 | 72 / 120 | 72 / 120 | 0 |
+
+### 5.3 해석
+
+- **Secure 힙 +2080 B = DMA Task 2 개 x 1040 B** [실측]. 1040 = Secure 스택 1024 (`configMINIMAL_SECURE_STACK_SIZE`)
+  + 봉인 값 8 (`securecontextSTACK_SEAL_SIZE`, `secure_context.c:57`) + 힙 블록 헤더 8 (`BlockLink_t`, `secure_heap.c:130`) [코드]. **정적 Δ 에는 안 보이던, S 가 실제로 더 쓰는 SRAM 중 가장 큰 항목이다**
+  (정적 SRAM Δ +1096 B 의 약 1.9 배). Secure 힙 사용률은 S 41 % (4176/10240), I 20 %. 태스크 수 n 이면 1040·n 이 된다 [도출].
+- **그 1024 B Secure 스택 중 중재자가 실제로 쓰는 것은 208 B** (P1, P2 같음). `SECURE_dma_m2m_start` 프레임(`.su`: P1 32, P2 16)과
+  `verify_inst` (0) 만으로는 작다. 나머지는 Task 가 Secure 코드 안에 있을 때 들어온 예외가 PSP_S 에 쌓는 프레임(기본 + FP 확장 + Secure→NS 추가 상태)
+  으로 보인다 [추정: 프로파일과 무관하게 같은 값이 그 근거]. 1024 B 예약은 약 5 배 여유. 이 앱에서는 `configMINIMAL_SECURE_STACK_SIZE` 를
+  줄여 Secure 힙 비용을 줄일 수 있다 [도출, 시험 안 함].
+- **NS DMA Task 스택 +64 B (128 vs 64).** 정적 프레임은 오히려 S 가 작다 (`vDmaTaskA` 16 vs 24). 원인은 미확인이다. 후보 [추정]:
+  Secure 함수의 복귀 정리(`vmov.f32` s0–s15) 가 FP 상태를 활성(FPCA=1)으로 남겨, 이후 이 Task 위에서 받는 예외가 확장 프레임(26 워드, +72 B)을 쌓는다.
+  확인하려면 Task 스택의 high-water 근처 워드를 덤프해 FP 프레임 모양인지 보면 된다.
+- **Secure MSP:** P1 에서는 I 가 오히려 104 B 더 깊고, P2 에서는 같다. 두 빌드 모두 NS PendSV 안에서 부르는 `SecureContext_Load/SaveContext` 가
+  MSP_S 를 쓴다. I 에서는 그 도중에 NS DMA ISR 이 끼어들면 Secure→NS 예외가 되어 추가 상태 컨텍스트까지 MSP_S 에 쌓이고, S 의 완료 ISR 은
+  Secure 라 그 추가분이 없다 [추정]. 어느 쪽이든 216 B 이하로 작다.
+- **NS 힙, NS MSP, 다른 Task 는 같다.** 중재자는 NS 커널 자원을 더 쓰지 않는다.
+- **정리:** 정적 Δ (+1096 B SRAM) 에 런타임 Δ 를 더하면 S 가 실제로 더 차지하는 SRAM 은 **Secure 힙 +2080 B, NS Task 스택 high-water +64 B x 2**
+  가 추가된다. 다만 Task 스택·MSP 는 예약 크기 안의 사용 깊이라 SRAM 총량을 바꾸지는 않고, Secure 힙도 10 KB 예약 안이다.
+  예약 크기를 실제 사용에 맞춰 줄이는 설계라면 Secure 힙 1040 B/Task 가 S 의 추가 비용이 된다.
+
+### 5.4 기능 확인 (같은 실행, 스택을 읽은 뒤 10 초)
+
+| 항목 | S (P1, P2) | I (P1, P2) |
+|---|---|---|
+| 완료 ISR 횟수 / 10 초 | 29–30 (`DFSDM1_FLT3_IRQHandler`) | 29–30 (`DMA1_Channel1_IRQHandler`, NS) |
+| Task A Cluster 8 B | 0x2001b600: 00 01 … 07 | 0x2001b4a0: 00 01 … 07 |
+| Task B Cluster 8 B | 0x2001b900: 00 01 … 07 | 0x2001b5c0: 00 01 … 07 |
+| dmaStatus A / B | 0 / 0 (TC) | 0 / 0 |
+| Secure MPU 영역 4 / 5 (RBAR, RLAR) | 0x2001b603, 0x2001b6e1 / 0x2001b903, 0x2001b9e1 | — |
+| MPCBB1 VCTR13 | 0x04800000 (bit 23 = 0x2001b700, bit 26 = 0x2001ba00 가드) | — |
+| DMA1_CH1 CCR (NS alias 로 읽음) | 0x00020000 (SECM 만 보임) | 0x000060cb (SECM = 0, M2M·PL·MINC·PINC·TEIE·TCIE·EN) |
+
+- 두 빌드 모두 두 Task 가 전송을 완료한다. 10 초 동안 타깃 tick 은 약 8600 (브레이크포인트 정지 시간 때문). 그 시간에 기대되는 완료는
+  Task A 17 + Task B 12 ≈ 29 로 측정과 맞는다 [도출].
+- I 의 비특권 DMA Task 가 NS-MPU 영역 7 (DMA1 레지스터) 로 채널을 직접 설정해 동작함을 보드에서 확인했다 (패턴 3 기준선이 유효).
+
+**기본 빌드 Task B 수정 확인 (§7.5, `chk_default_P1`, 20 초):** 완료 30 회 / 10 초, Task A 0x2001b700 과 Task B **0x2001ba00** 모두 00 … 07,
+dmaStatus 0. Secure MPU 영역 5 = **0x2001ba03 / 0x2001bae1**, MPCBB1 VCTR13 = **0x09000000** (bit 24 = 0x2001b800, bit 27 = 0x2001bb00).
+§7.5 의 기대값과 정확히 같다 [실측]. 수정 전에는 Task B 가 동작하지 않았을 것으로 도출했지만, 수정 전 빌드는 보드에서 돌려 보지 않았다.
+
+### 5.5 정적 프레임 교차 확인 (`.su`)
+
+| 함수 | 세계 | P1 S | P1 I | P2 S | P2 I |
+|---|---|---|---|---|---|
+| `SECURE_dma_m2m_start` | Secure | 32 | — | 16 | — |
+| `verify_inst` (naked) | Secure | 0 | — | 0 | — |
+| `DMA1_Channel1_IRQHandler` | Secure | 16 | — | 0 | — |
+| `GTZC_IRQHandler` | Secure | 4 | — | 0 | — |
+| `DFSDM1_FLT3_IRQHandler` (doorbell) | NS | 24 | — | 24 | — |
+| `DMA1_Channel1_IRQHandler` (Insecure) | NS | — | 24 | — | 24 |
+| `vDmaTaskA` / `vDmaTaskB` | NS | 16 | 24 | 16 | 24 |
+
+함수 하나의 프레임이라 호출 깊이와 예외 프레임은 들어 있지 않다. 런타임 high-water 가 이보다 크고 같은 방향이 아닌 항목(NS DMA Task 스택)은
+§5.3 처럼 예외 프레임 쪽 원인을 의심한다.
 
 ## 6. 논문과 비교
 
@@ -227,6 +304,16 @@ FreeRTOS ARM_CM33 포트의 NS-MPU 8 개 중 0–3 은 커널 고정, 4 는 태�
 | M6 | P2 S 빌드에서 S-MPU 하드코딩 대조 실패 (리터럴 없음) | -O1 에서 `SMPU_SetupTaskRegions` 가 `main` 에 inline 되고, RBAR 값이 `base \| AP=01 \| XN` 으로 접혀 `0x2001b603` 리터럴이 된다 | Secure 전체 리터럴에서 `(word & ~0x1F) == Cluster base` (RBAR BASE 필드) 로 비교 | 없음. 4 빌드 통과 |
 | M8 | 그림 생성 시 `findfont: Font family 'Noto Sans CJK KR' not found` | Noto CJK 는 `.ttc` 하나에 여러 face 가 들어 있어 matplotlib 캐시가 KR 이름으로 찾지 못한다 | `mem_figures.py` 가 `.ttc` 를 직접 등록하고 그 face 이름(JP, 한글 글리프 동일)을 쓴다. SVG 글자는 path 로 저장해 글꼴 없는 환경에서도 같게 보인다 | 없음 (그림만) |
 | M7 | NS veneer 가 맵에 `veneer` 로 안 보인다 | 링커가 NS veneer 를 `.text` 안의 `.fini.__stub` (linker stubs) 입력 섹션으로 넣는다 | C8 매핑에 `.fini.__stub` 추가 (S 40 B / I 24 B = 2 개 x 8 B) | C8 에 +16 B 반영 |
+
+### 7.1b 런타임 측정(§5)에서 고친 것
+
+| # | 현상 | 원인 | 조치 | 영향 |
+|---|---|---|---|---|
+| M9 | 시험 실행에서 Secure MSP 깊이가 5 초 두 번에 168 B / 48 B 로 달랐다 | 완료 횟수를 세는 브레이크포인트가 NS ISR 안에서 코어를 매번 멈춰, 인터럽트 중첩·tail-chain 양상이 바뀌었다 | 스택을 재는 60 초 동안은 브레이크포인트를 두지 않고, 다 읽은 뒤 10 초 동안 따로 센다. 빌드마다 2 회 반복 → 모든 값이 두 번 같음 | 본 측정에는 없음 |
+| M10 | 처음에 Secure MPU 영역 4 가 0x2001c6c3 (Task 스택 영역) 으로 읽혔다 | MPU 레지스터는 보안 상태별로 뱅크되고, 디버거는 코어가 멈춘 상태의 뱅크를 본다. NS 에서 멈춰 NS-MPU 가 보였다 | Secure 코드(`__acle_se_SECURE_dma_m2m_start`) 안에서 멈춘 뒤 읽는다 | 없음 |
+| M11 | NS 벡터 테이블(0x08040004) 읽기가 0 을 돌려줘 `Reset_Handler` 에 브레이크를 걸지 못했다 | 디버거의 NS alias 플래시 읽기 결과. 원인 미확인 | ELF 심볼 주소를 쓴다 | 없음 |
+| M12 | MSP_S 를 `_estack` 기준 깊이로 내면 P1 S 280 / I 392 처럼 빌드 차이가 크게 보였다 | 칠할 때 살아 있던 Secure `main` 프레임 크기가 빌드마다 다르다 (232 vs 240 B, P2 는 328 vs 320 B). 부팅 전용 프레임이다 | 지표를 "NS 시작 후 사용" = NS 첫 명령 시점 MSP 부터 가장 깊은 곳까지로 바꿨다 | §5.2 의 MSP 값 |
+| M13 | gdb 가 사용자 `~/.gdbinit` 의 pwndbg 를 올려 정지마다 문맥을 출력했다 | 기본 gdbinit | `gdb-multiarch -nx` | 없음 |
 
 ### 7.2 빌드를 고친 것
 
@@ -341,7 +428,18 @@ Task B 수정 후 재측정 값이다 (수정 전과 동일, §7.5). 그림: §1
 | C10 | 정렬 fill | −22 | +127 | −22 | +127 |
 | | **합계** | **+2520** | **+1096** | **+1488** | **+1096** |
 
-### 8.4 자원 (바이트 아님)
+### 8.4 런타임 SRAM (보드 실측, 60 초 x 2 회, 최대 사용, 바이트)
+
+| 항목 | 예약 | P1 S | P1 I | P1 Δ | P2 S | P2 I | P2 Δ |
+|---|---|---|---|---|---|---|---|
+| **Secure 힙** | 10240 | 4176 | 2096 | **+2080** | 4168 | 2088 | **+2080** |
+| NS 힙 | 8192 | 2792 | 2792 | 0 | 2792 | 2792 | 0 |
+| Secure context 스택 (DMA Task 하나) | 1024 | 208 | 없음 | | 208 | 없음 | |
+| Secure MSP (NS 시작 후) | | 112 | 216 | −104 | 208 | 208 | 0 |
+| NS MSP (NS 시작 후) | | 320 | 320 | 0 | 320 | 320 | 0 |
+| NS 스택 (DMA Task 하나) | 1024 | 128 | 64 | +64 | 128 | 64 | +64 |
+
+### 8.5 자원 (바이트 아님)
 
 | 자원 | S | I |
 |---|---|---|

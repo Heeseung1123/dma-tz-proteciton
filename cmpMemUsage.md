@@ -3,7 +3,8 @@
 작성일 2026-11-22. **계획 문서**다. 결과는 `cmpMemUsage_result.md`, 측정 절차와 스크립트 동작은 `HowmemUsageWork.md`.
 
 > **2026-11-22 승인·구현 상태:** Q1 = 패턴 3 (비특권 DMA Task + NS-MPU r7 에 DMA1 레지스터 32 B, 특권 Task 아님). Q2, Q3 = 권장안
-> (`EVAL_MEM` 에서만 제외). 정적 측정(§6.1–6.4, §7.1) 완료. 런타임(§6.5)과 보드 기능 확인(§7.2)은 미실행.
+> (`EVAL_MEM` 에서만 제외). 정적 측정(§6.1–6.4, §7.1) 완료. 런타임(§6.5, R1–R5)과 보드 기능 확인(§7.2)은 2026-11-22 보드 실측 완료
+> (결과 §5, 방법 `HowmemUsageWork.md` §11). R3 는 계획과 달리 스택 배열을 직접 덤프하지 않고 `run_runtime.py` 가 긁는다.
 > 계획과 달라진 점: (1) `ucPrivateBuffer` 를 빼면 `s_dmaTaskMem` 이 0x2001b500 으로 내려가서 `EVAL_MEM` 전용 Cluster 주소와
 > `LAYOUT_EXPECT` 검사를 추가했다. (2) 기본 빌드의 Task B 하드코딩 불일치를 발견했다 (gap G-2, 수정 안 함). (3) 스크립트는
 > `mem_measure.py` 하나로 합쳤다 (`mem_layout.py` 없음). (4) 결과의 구성요소는 C1–C10 (C8 = NSC 관문, C9 = NS 호출부, C10 = 정렬 fill).

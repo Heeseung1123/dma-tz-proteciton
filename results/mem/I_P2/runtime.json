@@ -1,0 +1,126 @@
+{
+ "build": "I_P2",
+ "secs": 60,
+ "isr": "DMA1_Channel1_IRQHandler",
+ "xTickCount": 60654,
+ "msp_s_at_ns_reset": 805404416,
+ "painted": {
+  "secure_heap": [
+   "0x300000d0",
+   "0x300028d0"
+  ],
+  "msp_s": [
+   "0x300028d0",
+   "0x30017ec0"
+  ],
+  "msp_ns": [
+   "0x2001ce10",
+   "0x2002ffc0"
+  ]
+ },
+ "secure_heap": {
+  "total": 10240,
+  "free": 8152,
+  "min_ever_free": 8152
+ },
+ "ns_heap": {
+  "total": 8192,
+  "free": 5400,
+  "min_ever_free": 5400
+ },
+ "secure_contexts": [
+  {
+   "task": "Plain_Task",
+   "limit": "0x300000d8",
+   "start": "0x300004d8",
+   "size": 1024,
+   "used": 16
+  },
+  {
+   "task": "IDLE",
+   "limit": "0x300004e8",
+   "start": "0x300008e8",
+   "size": 1024,
+   "used": 4
+  }
+ ],
+ "msp_s": {
+  "painted": [
+   "0x300028d0",
+   "0x30017ec0"
+  ],
+  "used_below_painted_top": 144,
+  "depth_from_estack": 464,
+  "unpainted_top": 320
+ },
+ "msp_ns": {
+  "painted": [
+   "0x2001ce10",
+   "0x2002ffc0"
+  ],
+  "used_below_painted_top": 256,
+  "depth_from_estack": 320,
+  "unpainted_top": 64
+ },
+ "ns_task_stacks": {
+  "DMA_Task_A": {
+   "size": 1024,
+   "used": 64
+  },
+  "DMA_Task_B": {
+   "size": 1024,
+   "used": 64
+  },
+  "Plain_Task": {
+   "size": 1024,
+   "used": 120
+  },
+  "IDLE": {
+   "size": 2048,
+   "used": 72
+  },
+  "Tmr Svc": {
+   "size": 2048,
+   "used": 120
+  }
+ },
+ "completions": {
+  "secs": 10,
+  "hits": 30,
+  "ticks": 8646
+ },
+ "functional": {
+  "taskA": {
+   "dst": "0x2001b4a0",
+   "dst8": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "dmaDone": 1,
+   "dmaStatus": 0
+  },
+  "taskB": {
+   "dst": "0x2001b5c0",
+   "dst8": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "dmaDone": 0,
+   "dmaStatus": 0
+  },
+  "dma1_ch1_ccr": "0x60cb"
+ },
+ "SystemCoreClock": 110000000
+}

@@ -33,6 +33,11 @@ OUT="results/$PHASE/$VARIANT"; mkdir -p "$OUT"
 P=Projects/STM32L562E-DK/Applications/FreeRTOS/FreeRTOS_SecureIOToggle_TrustZone/STM32CubeIDE
 cp $P/Secure/Debug/*_Secure.elf $P/Secure/Debug/*_Secure.map $P/Secure/Debug/*_Secure.list "$OUT/"
 cp $P/NonSecure/Debug/*_NonSecure.elf $P/NonSecure/Debug/*_NonSecure.map $P/NonSecure/Debug/*_NonSecure.list "$OUT/"
+# -fstack-usage frame sizes (static stack cross-check, cmpMemUsage_result.md §5 R5). *.su is gitignored.
+for w in Secure NonSecure; do
+  mkdir -p "$OUT/su/$w"
+  (cd "$P/$w/Debug" && find . -name '*.su' -exec cp --parents {} "$ROOT/$OUT/su/$w/" \;)
+done
 {
   echo "variant=$VARIANT profile=$PROFILE S=$OS NS=$ONS defs=[$DEFS]"
   echo "git=$(git rev-parse HEAD) dirty=$(git status --porcelain -- '*.c' '*.h' | tr '\n' ';')"

@@ -1,5 +1,5 @@
 variant=S_P1 profile=P1 S=-O0 NS=-O1 defs=[ -DEVAL_MEM]
-git=878635f0ff4fdef49cc257328ecae25c8d067762 dirty=
+git=b81850005339eec8caa77684212a1e16c7b53828 dirty=
 arm-none-eabi-gcc (GNU Tools for STM32 14.3.rel1.20251027-0700) 14.3.1 20250623
 947724a5b1bccce04f4b3da0850fbe942db65a61d560a1632dd980b8f988afe4  FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf
 0cc2c44b532cf2186e2af3ff167ff064846fccd74ee6b6034d2220fea684a9c0  FreeRTOS_SecureIOToggle_TrustZone_Secure.elf

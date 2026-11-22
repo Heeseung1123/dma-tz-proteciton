@@ -1,0 +1,152 @@
+{
+ "build": "chk_default_P1",
+ "secs": 20,
+ "isr": "DFSDM1_FLT3_IRQHandler",
+ "xTickCount": 20202,
+ "msp_s_at_ns_reset": 805404504,
+ "painted": {
+  "secure_heap": [
+   "0x300000d0",
+   "0x300028d0"
+  ],
+  "msp_s": [
+   "0x300028e8",
+   "0x30017f18"
+  ],
+  "msp_ns": [
+   "0x2001d350",
+   "0x2002ffc0"
+  ]
+ },
+ "secure_heap": {
+  "total": 10240,
+  "free": 6072,
+  "min_ever_free": 6072
+ },
+ "ns_heap": {
+  "total": 8192,
+  "free": 5400,
+  "min_ever_free": 5400
+ },
+ "secure_contexts": [
+  {
+   "task": "DMA_Task_A",
+   "limit": "0x300000d8",
+   "start": "0x300004d8",
+   "size": 1024,
+   "used": 208
+  },
+  {
+   "task": "DMA_Task_B",
+   "limit": "0x300004e8",
+   "start": "0x300008e8",
+   "size": 1024,
+   "used": 208
+  },
+  {
+   "task": "Plain_Task",
+   "limit": "0x300008f8",
+   "start": "0x30000cf8",
+   "size": 1024,
+   "used": 56
+  },
+  {
+   "task": "IDLE",
+   "limit": "0x30000d08",
+   "start": "0x30001108",
+   "size": 1024,
+   "used": 4
+  }
+ ],
+ "msp_s": {
+  "painted": [
+   "0x300028e8",
+   "0x30017f18"
+  ],
+  "used_below_painted_top": 48,
+  "depth_from_estack": 280,
+  "unpainted_top": 232
+ },
+ "msp_ns": {
+  "painted": [
+   "0x2001d350",
+   "0x2002ffc0"
+  ],
+  "used_below_painted_top": 256,
+  "depth_from_estack": 320,
+  "unpainted_top": 64
+ },
+ "ns_task_stacks": {
+  "DMA_Task_A": {
+   "size": 1024,
+   "used": 128
+  },
+  "DMA_Task_B": {
+   "size": 1024,
+   "used": 128
+  },
+  "Plain_Task": {
+   "size": 1024,
+   "used": 120
+  },
+  "IDLE": {
+   "size": 2048,
+   "used": 72
+  },
+  "Tmr Svc": {
+   "size": 2048,
+   "used": 120
+  }
+ },
+ "completions": {
+  "secs": 10,
+  "hits": 30,
+  "ticks": 8538
+ },
+ "functional": {
+  "taskA": {
+   "dst": "0x2001b700",
+   "dst8": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "dmaDone": 1,
+   "dmaStatus": 0
+  },
+  "taskB": {
+   "dst": "0x2001ba00",
+   "dst8": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "dmaDone": 1,
+   "dmaStatus": 0
+  },
+  "dma1_ch1_ccr": "0x20000",
+  "halted_in_secure_at": "0xc000e68",
+  "smpu": {
+   "4": [
+    "0x2001b703",
+    "0x2001b7e1"
+   ],
+   "5": [
+    "0x2001ba03",
+    "0x2001bae1"
+   ]
+  },
+  "mpcbb1_vctr13": "0x9000000"
+ },
+ "SystemCoreClock": 110000000
+}
