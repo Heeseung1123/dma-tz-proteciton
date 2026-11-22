@@ -93,3 +93,22 @@ DMA cluster 부분은 일단 현재로서는 구현하지 않을 것이고, S-MP
 
 논문에 없는 평가 전용 설정이다 [논문 밖]. `BENCH_ISR_TS` 빌드에서만 DMA1_CH2 를 SECM=0 으로 풀고 IRQ 30 을 NS 로 보낸다 (Secure `main.c`).
 CH2 는 중재자와 가드 검사 없이 NS 가 직접 쓴다. 기본 빌드와 다른 평가 빌드에는 영향이 없다 [코드]. 측정 방법은 `cmpISRoverhead.md` §12.
+
+## G. 메모리 측정용 Insecure 중재자 기준선과 발견 사항 (2026-11-22)
+
+측정 계획 `cmpMemUsage.md`, 결과 `cmpMemUsage_result.md`, 절차 `HowmemUsageWork.md`.
+
+1. **Insecure 중재자 (논문 밖, 평가 전용).** `MEDIATOR_INSECURE` 빌드에서만 존재한다. DMA1_CH1 을 SECM=0, IRQ 29 를 NS 로 두고
+   NS 가 직접 설정한다 (패턴 3: 비특권 DMA Task 에 NS-MPU 영역 1개(r7, 0x40020000+32B, Device, RW, XN)로 DMA1 ISR/IFCR + CH1 레지스터를 허용).
+   CLAUDE.md 의 "NS-MPU 영역 추가 사용 금지" 는 제안 기법(S) 에 대한 것이고 S 빌드는 NS-MPU 를 추가로 쓰지 않는다 [코드]. 기본 빌드에는 영향이 없다
+   (기본 빌드 ELF 의 alloc 섹션 내용과 심볼 표가 변경 전과 동일 [코드]).
+2. **[기존 결함, 수정하지 않음] 기본 빌드의 Task B S-MPU/MPCBB 하드코딩이 NS 배치와 맞지 않는다.** Secure `main.c` 는
+   `DMA_TASK_B_CLUSTER_BASE = 0x2001c000` (가드 0x2001c100) 이지만, 기본 빌드에서 `s_dmaTaskMem` = 0x2001b600 이므로 실제 B Cluster 는 0x2001ba00 이다
+   [코드: nm]. 0x2001c000–0x2001c1ff 는 `Timer_Stack` (0x2001bc50–0x2001c44f) 안이라, (a) Task B 의 `verify_inst` 는 TTT 영역이 무효라 거부될 것이고,
+   (b) Timer 태스크 스택의 256B 블록이 MPCBB Secure 가 되어 NS 쓰기가 무시된다 [도출, 보드 미확인]. 9679590 부터 있던 값이다 (`g_dma_tbl` 항목 6 도 같은 값).
+   BENCH 빌드는 Task B 를 suspend 하므로 측정에는 드러나지 않았다. **결정 필요: 기본 빌드를 0x2001ba00 으로 고칠지.**
+   `EVAL_MEM` 빌드는 자기 배치(0x2001b500)에서 A = 0x2001b600, B = 0x2001b900 을 쓰고, `mem_measure.py` 가 Secure 리터럴과 NS 배치를 대조한다.
+3. **`EVAL_MEM` 에서 `s_dmaTaskMem` 이 0x100 내려간다.** 코드가 접근하지 않는 `ucPrivateBuffer` (256B) 를 빼서다. 그래서 `EVAL_MEM` 빌드 전용 Cluster 주소와
+   `LAYOUT_EXPECT=2001b500` 검사를 두었다 (`build_variant.sh`).
+4. **참고: `s_dmaSrcA/B` NS-MPU 영역 base 가 32B 정렬이 아니다** (`aligned(4)`, 예: 0x2001b448). 포트가 base 를 내림, limit 을 32B 로 맞추므로 실제 영역은
+   요청보다 넓다 (0x2001b440–0x2001b47f) [코드: port.c 1986–1988]. 기본 빌드도 같다. 이번 측정에서는 바꾸지 않았다.

@@ -126,6 +126,10 @@ CMSE_NS_ENTRY uint32_t SECURE_dma_buffer_request(uint32_t len)
 #include "stm32l5xx.h"
 #include <arm_cmse.h>
 
+/* MEDIATOR_INSECURE (memory baseline, cmpMemUsage.md): no Secure mediator, no S-MPU/MPCBB/TZIC
+ * DMA protection. NS programs DMA1_CH1 directly (NonSecure app_freertos.c). */
+#if !defined(MEDIATOR_INSECURE)
+
 /* 중재자 사이클 측정 훅 (BENCH_TS 빌드에서만 코드 생성, bench_s.inc 참고) */
 #if defined(BENCH_PHASE) && defined(BENCH_TS)
 extern volatile uint32_t g_benchT1, g_benchT4;
@@ -172,7 +176,9 @@ static volatile uint8_t s_busy;
  *   - CMSIS 함정: GTZC_TZIC_FCR3_MPCBB1FC_Msk 는 정의되지 않은 GTZC_CFGR3_MPCBB1_Msk 를
  *     참조한다(stm32l562xx.h). 그래서 FCR3 값은 GTZC_TZIC_FCR3_MPCBB1FC_Pos(= SRAM1_Pos)로 만든다.
  */
+#if !defined(EVAL_MEM)   /* write-only audit word (read by GDB only), not built for the memory evaluation */
 uint32_t g_tzic_sr3_at_arm;   /* 감사용: IER 을 켜기 직전의 SR3. 기대 bit4(SRAM1F)=1 */
+#endif
 
 static void Secure_TZIC_ArmGuardIrqOnce(void)
 {
@@ -180,7 +186,9 @@ static void Secure_TZIC_ArmGuardIrqOnce(void)
     if ((GTZC_TZIC_S->IER3 & GTZC_TZIC_IER3_SRAM1IE_Msk) == 0U)
     {
         /* 순서 고정: 기록 -> 지움 -> 켬. 지우기 전에 켜면 즉시 재진입한다. */
+#if !defined(EVAL_MEM)
         g_tzic_sr3_at_arm = GTZC_TZIC_S->SR3;
+#endif
         GTZC_TZIC_S->FCR3 = (1UL << GTZC_TZIC_FCR3_MPCBB1FC_Pos);   /* SRAM1F 지움 */
         __DSB();
         NVIC_ClearPendingIRQ(GTZC_IRQn);
@@ -310,7 +318,7 @@ int SECURE_dma_m2m_start(void *src_buf, void *dst_buf, uint32_t len)
     return 0;
 }
 
-#if 1   /* table-search comparison. 0 = disable (also remove the secure_nsc.h decl and BENCH_TABLE tests) */
+#if !defined(EVAL_MEM)   /* table-search comparison. EVAL_MEM = disable (also remove the secure_nsc.h decl and BENCH_TABLE tests) */
 /* Comparison target (paper Table 2): linear search of an 8-entry Flash table instead of the S-MPU tag.
  * NS-MPU step (TTAT x2) is the same as verify_inst; only the S-MPU tag (TTT x2) is replaced by the table.
  * Entry 7 = Task A Cluster (worst-case hit).
@@ -420,9 +428,11 @@ secureportNON_SECURE_CALLABLE uint32_t SECURE_bench_verify_table(void *dst, uint
 secureportNON_SECURE_CALLABLE int SECURE_dma_m2m_busy(void) { return s_busy; }
 */
 
+#if !defined(EVAL_MEM)   /* bench only (empty NSC entry/return) */
 secureportNON_SECURE_CALLABLE
 int SECURE_nop3(void *a, void *b, uint32_t c)
 { (void)a; (void)b; (void)c; return 0; }
+#endif
 
 void DMA1_Channel1_IRQHandler(void)
 {
@@ -462,6 +472,7 @@ void GTZC_IRQHandler(void)
     __DSB();
 
 }
+#endif /* !MEDIATOR_INSECURE */
 
 #ifdef BENCH_PHASE
 #include "bench_s.inc"

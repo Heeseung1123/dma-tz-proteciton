@@ -54,14 +54,20 @@ void SECURE_LEDToggle(void);
 
 //int SECURE_guard_buffer(uint32_t, uint32_t);
 //
+/* MEDIATOR_INSECURE: memory baseline (cmpMemUsage.md), NS programs DMA1_CH1 itself, no Secure mediator.
+ * EVAL_MEM: memory evaluation, bench-only / comparison-only entry points are not built. */
+#if !defined(MEDIATOR_INSECURE)
 int SECURE_dma_m2m_start(void*, void*, uint32_t);
+#if !defined(EVAL_MEM)
 int SECURE_dma_m2m_start_table(void*, void*, uint32_t);   /* 테이블 방식 비교 대상 (secure_nsc.c) */
+#endif
 /* int SECURE_dma_m2m_busy(void); */   /* no NS caller (secure_nsc.c) */
 int SECURE_dma_m2m_init(void*);   /* B: NS status word / A (DMA_NOTIFY_BLXNS): NS callback */
 
 /* NS-targeted IRQ the Secure DMA ISR pends on completion (B). Unused peripheral (DFSDM1 FLT3,
  * IRQ 105, never clocked). The NS handler must be DFSDM1_FLT3_IRQHandler (app_freertos.c). */
 #define SECURE_DMA_DOORBELL_IRQn   DFSDM1_FLT3_IRQn
+#endif /* !MEDIATOR_INSECURE */
 
 /* DMA completion ISR bench (cmpISRoverhead.md). Build with BENCH_ISR_TS=k: only stamp k is
  * emitted, so one run records one point. The stamp reads CYCCNT first, then stores it to SRAM2
@@ -72,6 +78,8 @@ int SECURE_dma_m2m_init(void*);   /* B: NS status word / A (DMA_NOTIFY_BLXNS): N
 #else
 #define ISR_TS(k)   ((void)0)
 #endif
-int SECURE_nop3(void*, void*, uint32_t);
+#if !defined(EVAL_MEM)
+int SECURE_nop3(void*, void*, uint32_t);   /* bench only (empty NSC) */
+#endif
 #endif /* SECURE_NSC_H */
 /* USER CODE END Non_Secure_CallLib_h */

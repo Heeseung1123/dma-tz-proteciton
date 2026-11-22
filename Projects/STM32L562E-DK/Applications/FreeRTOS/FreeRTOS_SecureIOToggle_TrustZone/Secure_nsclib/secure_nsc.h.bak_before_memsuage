@@ -1,0 +1,77 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file    Secure_nsclib/secure_nsc.h
+  * @author  MCD Application Team
+  * @brief   Header for secure non-secure callable APIs list
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2019 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+
+/* USER CODE BEGIN Non_Secure_CallLib_h */
+/* Define to prevent recursive inclusion -------------------------------------*/
+#ifndef SECURE_NSC_H
+#define SECURE_NSC_H
+
+/* Includes ------------------------------------------------------------------*/
+#include <stdint.h>
+
+/* Exported types ------------------------------------------------------------*/
+/**
+  * @brief  non-secure callback ID enumeration definition
+  */
+typedef enum
+{
+  SECURE_FAULT_CB_ID     = 0x00U, /*!< System secure fault callback ID */
+  GTZC_ERROR_CB_ID       = 0x01U  /*!< GTZC secure error callback ID */
+} SECURE_CallbackIDTypeDef;
+
+#if 0 
+ typedef enum {
+     MPCBB_OK                = 0,
+     MPCBB_ERR_NOT_ALIGNED   = -1,  // Base or Length is not 256 Byte aligned
+     MPCBB_ERR_OUT_OF_RANGE  = -2,  // buffer is out of SRAM
+     MPCBB_ERR_NO_LOWER_ROOM = -3,  // buffer is top, no room for Top Guard
+     MPCBB_ERR_NO_UPPER_ROOM = -4,  // buffer is bottom, no room for Bottom Guard
+ } mpcbb_status_t;
+#endif 
+
+/* Exported constants --------------------------------------------------------*/
+/* Exported macro ------------------------------------------------------------*/
+/* Exported functions ------------------------------------------------------- */
+void SECURE_RegisterCallback(SECURE_CallbackIDTypeDef CallbackId, void *func);
+void SECURE_LEDToggle(void);
+
+//int SECURE_guard_buffer(uint32_t, uint32_t);
+//
+int SECURE_dma_m2m_start(void*, void*, uint32_t);
+int SECURE_dma_m2m_start_table(void*, void*, uint32_t);   /* 테이블 방식 비교 대상 (secure_nsc.c) */
+/* int SECURE_dma_m2m_busy(void); */   /* no NS caller (secure_nsc.c) */
+int SECURE_dma_m2m_init(void*);   /* B: NS status word / A (DMA_NOTIFY_BLXNS): NS callback */
+
+/* NS-targeted IRQ the Secure DMA ISR pends on completion (B). Unused peripheral (DFSDM1 FLT3,
+ * IRQ 105, never clocked). The NS handler must be DFSDM1_FLT3_IRQHandler (app_freertos.c). */
+#define SECURE_DMA_DOORBELL_IRQn   DFSDM1_FLT3_IRQn
+
+/* DMA completion ISR bench (cmpISRoverhead.md). Build with BENCH_ISR_TS=k: only stamp k is
+ * emitted, so one run records one point. The stamp reads CYCCNT first, then stores it to SRAM2
+ * 0x20030014, so its own store never reaches the recorded value. Uses only r0/r12 (HW-stacked). */
+#define ISR_TS_ASM  "ldr r12, =0xE0001004 \n ldr r12, [r12] \n ldr r0, =0x20030014 \n str r12, [r0] \n"
+#if defined(BENCH_ISR_TS)
+#define ISR_TS(k)   do { if ((k) == BENCH_ISR_TS) __asm volatile (ISR_TS_ASM ::: "r0", "r12", "memory"); } while (0)
+#else
+#define ISR_TS(k)   ((void)0)
+#endif
+int SECURE_nop3(void*, void*, uint32_t);
+#endif /* SECURE_NSC_H */
+/* USER CODE END Non_Secure_CallLib_h */

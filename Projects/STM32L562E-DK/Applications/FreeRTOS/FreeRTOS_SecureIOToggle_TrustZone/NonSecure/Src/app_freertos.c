@@ -89,9 +89,16 @@ typedef struct
     volatile uint8_t      dmaStatus;   /* last result: 0 = TC, 1 = TEIF */
 } dma_task_globals_t;
 
+#if defined(MEDIATOR_INSECURE)
+/* Memory baseline (cmpMemUsage.md §2.2 C7): no guard, so no 256B alignment is needed.
+ * NS-MPU (ARMv8-M) only needs 32B base/limit granularity. */
+#define DMA_TASK_GLOBALS_SIZE   ((sizeof(dma_task_globals_t) + 31u) & ~31u)
+#define DMA_CLUSTER_SIZE        256u
+#else
 #define DMA_TASK_GLOBALS_SIZE   256u   /* 256B so the Cluster starts on a 256B boundary */
 #define DMA_CLUSTER_SIZE        256u
 #define DMA_GUARD_SIZE          256u   /* one MPCBB block */
+#endif
 
 typedef struct
 {
@@ -104,6 +111,15 @@ typedef struct
     {
         uint8_t dst[DMA_CLUSTER_SIZE];   /* M2M DMA destination */
     } cluster;                       /* DMA Cluster: S-MPU tagged */
+#if defined(MEDIATOR_INSECURE)
+} __attribute__((aligned(32))) dma_task_mem_t;
+
+_Static_assert(sizeof(dma_task_globals_t) <= DMA_TASK_GLOBALS_SIZE, "globals overflow");
+_Static_assert(sizeof(dma_task_mem_t) % 32u == 0u, "NS-MPU 32B granularity");
+
+/* One NS-MPU user region = globals + DMA buffer */
+#define DMA_TASK_NSMPU_SIZE     sizeof(dma_task_mem_t)
+#else
     uint8_t guard[DMA_GUARD_SIZE];   /* guard block reservation; never touched by NS code */
 } __attribute__((aligned(256))) dma_task_mem_t;
 
@@ -115,6 +131,7 @@ _Static_assert(sizeof(dma_task_mem_t) == offsetof(dma_task_mem_t, guard) + DMA_G
 
 /* One NS-MPU user region = globals + Cluster (guard excluded) */
 #define DMA_TASK_NSMPU_SIZE     offsetof(dma_task_mem_t, guard)
+#endif
 
 /* Single array guarantees [A.globals|A.cluster|A.guard|B.globals|B.cluster|B.guard] */
 enum { DMA_TASK_A = 0, DMA_TASK_B = 1, DMA_TASK_NUM };
@@ -140,9 +157,11 @@ static void App_DmaDoneCallback(uint32_t status)
     }
 }
 #else
+#if !defined(MEDIATOR_INSECURE)
 /* B (default): the Secure DMA ISR writes the result here and pends SECURE_DMA_DOORBELL_IRQn.
  * Checked by SECURE_dma_m2m_init() (NS, writable by the caller). */
 static volatile uint32_t s_dmaStatusWord;
+#endif
 
 /* Completion -> owner task. Shared by the doorbell ISR and the bench's Insecure DMA ISR
  * (bench_ns.inc), so both paths run the same notify code. */
@@ -164,6 +183,56 @@ static inline __attribute__((always_inline)) void App_DmaNotifyOwner(uint32_t st
     portYIELD_FROM_ISR(woken);
 }
 
+#if defined(MEDIATOR_INSECURE)
+/* ---- Insecure mediator (memory baseline, cmpMemUsage.md §4, pattern 3) ----
+ * NS programs DMA1_CH1 (SECM=0, released by Secure main.c) directly. Same register sequence as
+ * SECURE_dma_m2m_start without verify_inst and s_busy; the ISR body is the bench's Insecure
+ * baseline ISR (bench_ns.inc) on CH1. The unprivileged DMA tasks reach these registers through
+ * one NS-MPU region (xRegions[2], DMA1 ISR/IFCR + CH1 registers, 32B). */
+#define INSECURE_DMA_NSMPU_BASE   ((void *)DMA1_BASE)   /* 0x40020000: ISR, IFCR, CH1 CCR..CM1AR */
+#define INSECURE_DMA_NSMPU_SIZE   32u
+_Static_assert(DMA1_Channel1_BASE + sizeof(DMA_Channel_TypeDef) <= DMA1_BASE + INSECURE_DMA_NSMPU_SIZE,
+               "CH1 registers inside the NS-MPU region");
+
+/* Privileged, before the scheduler (vCreateAppTasks): same CCR bits as SECURE_dma_m2m_init */
+static void Insecure_dma_m2m_init(void)
+{
+    DMA1_Channel1->CCR |= (DMA_CCR_MEM2MEM
+                        | DMA_CCR_MINC | DMA_CCR_PINC
+                        | DMA_CCR_PL_1
+                        | DMA_CCR_TCIE | DMA_CCR_TEIE);
+    NVIC_SetPriority(DMA1_Channel1_IRQn, configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY);
+    NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+}
+
+/* Called by the unprivileged task. No argument check beyond len (no protection) */
+static int Insecure_dma_m2m_start(void *src_buf, void *dst_buf, uint32_t len)
+{
+    if (len == 0) return -1;
+
+    DMA1_Channel1->CCR  &= ~DMA_CCR_EN;
+    DMA1_Channel1->CPAR  = (uint32_t)src_buf;
+    DMA1_Channel1->CM0AR = (uint32_t)dst_buf;
+    DMA1_Channel1->CNDTR = len;
+    DMA1->IFCR           = DMA_IFCR_CGIF1;
+    DMA1_Channel1->CCR  |= DMA_CCR_EN;
+    return 0;
+}
+
+void DMA1_Channel1_IRQHandler(void)
+{
+    uint32_t isr = DMA1->ISR;
+    uint32_t status;
+
+    if (isr & DMA_ISR_TEIF1)      { status = 1u; }
+    else if (isr & DMA_ISR_TCIF1) { status = 0u; }
+    else { DMA1->IFCR = DMA_IFCR_CGIF1; return; }
+
+    DMA1_Channel1->CCR &= ~DMA_CCR_EN;
+    DMA1->IFCR = DMA_IFCR_CGIF1;
+    App_DmaNotifyOwner(status);
+}
+#else /* !MEDIATOR_INSECURE */
 #if BENCH_ISR_TS == 3
 /* ISR bench stamp 3 (Tn): vector entry, before the compiler prologue of the real handler */
 __attribute__((naked)) void DFSDM1_FLT3_IRQHandler(void) { __asm volatile (ISR_TS_ASM "b Doorbell_IRQHandler \n"); }
@@ -178,6 +247,7 @@ void DFSDM1_FLT3_IRQHandler(void)
     App_DmaNotifyOwner(s_dmaStatusWord);
     ISR_TS(5);   /* Td: before epilogue */
 }
+#endif /* MEDIATOR_INSECURE */
 #endif
 
 /* One M2M transfer through the Secure mediator; returns after completion (0) or on reject (-1).
@@ -190,7 +260,11 @@ static int App_DmaM2M(dma_task_globals_t *g, void *src, void *dst, uint32_t len)
     if (r == 0) { while (!g->dmaDone) { } }
 #else
     g->dmaPending = 1u;          /* set before start: the ISR may run right after EN */
+#if defined(MEDIATOR_INSECURE)
+    int r = Insecure_dma_m2m_start(src, dst, len);
+#else
     int r = SECURE_dma_m2m_start(src, dst, len);
+#endif
     if (r == 0) { (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY); }
     else        { g->dmaPending = 0u; }
 #endif
@@ -254,7 +328,9 @@ static StackType_t xPlainTaskStack[ STACK_SIZE_WORDS ] __attribute__((aligned(32
 static void vDmaTaskA( void *pvParameters )
 {
   (void)pvParameters;
+#if !defined(MEDIATOR_INSECURE)   /* the baseline DMA tasks never call into Secure */
   portALLOCATE_SECURE_CONTEXT(configMINIMAL_SECURE_STACK_SIZE);
+#endif
 
   for (uint32_t i = 0; i < sizeof(s_dmaSrcA); i++) { s_dmaSrcA[i] = (uint8_t)i; }
 
@@ -277,7 +353,9 @@ static void vDmaTaskA( void *pvParameters )
 static void vDmaTaskB( void *pvParameters )
 {
   (void)pvParameters;
+#if !defined(MEDIATOR_INSECURE)   /* the baseline DMA tasks never call into Secure */
   portALLOCATE_SECURE_CONTEXT(configMINIMAL_SECURE_STACK_SIZE);
+#endif
 
   for (uint32_t i = 0; i < sizeof(s_dmaSrcB); i++) { s_dmaSrcB[i] = (uint8_t)i; }
 
@@ -293,9 +371,11 @@ static void vDmaTaskB( void *pvParameters )
   }
 }
 
+#if !defined(EVAL_MEM)   /* never read or written by code; not built for the memory evaluation */
 /* Example data the task is allowed to see */
 static uint8_t ucPrivateBuffer[256];
 static const uint32_t ulLookupTable[128];
+#endif
 
 /* Baseline task without DMA (no S-MPU tag on the Secure side) */
 static void vPlainTask( void *pvParameters )
@@ -325,8 +405,14 @@ static const TaskParameters_t xDmaTaskAParams =
     { &s_dmaTaskMem[DMA_TASK_A], DMA_TASK_NSMPU_SIZE, portMPU_REGION_READ_WRITE },
     /* Region 1: task-private DMA source (outside the Cluster) */
     { s_dmaSrcA, sizeof( s_dmaSrcA ), portMPU_REGION_READ_WRITE },
+#if defined(MEDIATOR_INSECURE)
+    /* Region 2 (baseline only): DMA1 ISR/IFCR + CH1 registers for Insecure_dma_m2m_start */
+    { INSECURE_DMA_NSMPU_BASE, INSECURE_DMA_NSMPU_SIZE,
+      portMPU_REGION_READ_WRITE | tskMPU_REGION_DEVICE_MEMORY | tskMPU_REGION_EXECUTE_NEVER }
+#else
     /* Region 2: unused; the guard is never in any NS-MPU region */
     { 0, 0, 0 }
+#endif
   }
 };
 
@@ -342,7 +428,12 @@ static const TaskParameters_t xDmaTaskBParams =
   {
     { &s_dmaTaskMem[DMA_TASK_B], DMA_TASK_NSMPU_SIZE, portMPU_REGION_READ_WRITE },
     { s_dmaSrcB, sizeof( s_dmaSrcB ), portMPU_REGION_READ_WRITE },
+#if defined(MEDIATOR_INSECURE)
+    { INSECURE_DMA_NSMPU_BASE, INSECURE_DMA_NSMPU_SIZE,
+      portMPU_REGION_READ_WRITE | tskMPU_REGION_DEVICE_MEMORY | tskMPU_REGION_EXECUTE_NEVER }
+#else
     { 0, 0, 0 }
+#endif
   }
 };
 
@@ -356,8 +447,13 @@ static const TaskParameters_t xPlainTaskParams =
   .puxStackBuffer = xPlainTaskStack,
   .xRegions =
   {
+#if !defined(EVAL_MEM)
     { ucPrivateBuffer, sizeof( ucPrivateBuffer ), portMPU_REGION_READ_WRITE },
     { ulLookupTable, sizeof( ulLookupTable ), portMPU_REGION_READ_ONLY },
+#else
+    { 0, 0, 0 },
+    { 0, 0, 0 },
+#endif
     { 0, 0, 0 }
   }
 };
@@ -374,6 +470,8 @@ void vCreateAppTasks( void )
 #if defined(DMA_NOTIFY_BLXNS)
   int initRes = SECURE_dma_m2m_init((void *)App_DmaDoneCallback);
   configASSERT(initRes == 0);
+#elif defined(MEDIATOR_INSECURE)
+  Insecure_dma_m2m_init();
 #else
   int initRes = SECURE_dma_m2m_init((void *)&s_dmaStatusWord);
   configASSERT(initRes == 0);

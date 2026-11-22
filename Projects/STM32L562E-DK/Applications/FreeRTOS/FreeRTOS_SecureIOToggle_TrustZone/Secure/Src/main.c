@@ -56,9 +56,11 @@
 static void NonSecure_Init(void);
 static void MX_ICACHE_Init(void);
 static void MX_GTZC_S_Init(void);
+#if !defined(MEDIATOR_INSECURE)
 static void Secure_DMA_LockAllChannels(void);
 static void Secure_TZIC_Init(void);
 static void SMPU_SetupTaskRegions(void);
+#endif
 
 
 /* USER CODE BEGIN PFP */
@@ -129,14 +131,25 @@ int main(void)
   HAL_GPIO_ConfigPinAttributes(GPIOG, (GPIO_PIN_All & ~(GPIO_PIN_12)), GPIO_PIN_NSEC);
   HAL_GPIO_ConfigPinAttributes(GPIOH, GPIO_PIN_All, GPIO_PIN_NSEC);
 
+#if defined(MEDIATOR_INSECURE)
+  /* Memory baseline (cmpMemUsage.md): DMA1_CH1 stays Non-secure and NS programs it directly.
+   * Same release as the ISR bench CH2 below; SECM is 0 after reset, cleared again explicitly.
+   * The clock is enabled here as Secure_DMA_LockAllChannels() does in the default build. */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+  DMA1_Channel1->CCR &= ~DMA_CCR_SECM;
+  NVIC_SetTargetState(DMA1_Channel1_IRQn);
+#else
   Secure_DMA_LockAllChannels();
+#endif
 #if defined(BENCH_ISR_TS)
   /* ISR bench only: DMA1_CH2 is the Insecure baseline (NS programs it, IRQ 30 goes to NS).
    * SECM is Secure-writable while EN=0 (RM0438 DMA chapter, section no. unconfirmed). */
   DMA1_Channel2->CCR &= ~DMA_CCR_SECM;
   NVIC_SetTargetState(DMA1_Channel2_IRQn);
 #endif
+#if !defined(MEDIATOR_INSECURE)
   Secure_TZIC_Init();
+#endif
 
   /* Leave the GPIO clocks enabled to let non-secure having I/Os control */
 
@@ -151,7 +164,9 @@ int main(void)
 
   /*************** Setup and jump to non-secure *******************************/
 
+#if !defined(MEDIATOR_INSECURE)
   SMPU_SetupTaskRegions();
+#endif
   NonSecure_Init();
 
   /* Non-secure software does not return, this code is not executed */
@@ -336,6 +351,7 @@ void assert_failed(uint8_t *file, uint32_t line)
 
 #endif /* USE_FULL_ASSERT */
 
+#if !defined(MEDIATOR_INSECURE)   /* DMA protection setup (paper §3.1-3.3), absent in the baseline */
 static void Secure_DMA_LockAllChannels(void)
 {
     __HAL_RCC_DMA1_CLK_ENABLE();
@@ -416,13 +432,22 @@ void Secure_TZIC_Init(void)
  * TTAT 는 통과) len 이 Cluster 를 넘어가면(공격 시나리오 (b), end 가 guard 안) 영역이
  * 무효/불일치가 되어 거부되게 하기 위함이다.
  */
+#if defined(EVAL_MEM)
+/* Memory evaluation build (cmpMemUsage.md): ucPrivateBuffer/ulLookupTable are not built, so
+ * s_dmaTaskMem moves to 0x2001b500 (check_layout.sh, LAYOUT_EXPECT). Both Clusters are taken from
+ * that layout: A = base + 0x100, B = base + 0x300 + 0x100. (The default build's Task B value
+ * 0x2001c000 does not match its own layout: docs/gap-analysis.md G-2.) */
+#define DMA_TASK_A_CLUSTER_BASE   0x2001b600u
+#define DMA_TASK_B_CLUSTER_BASE   0x2001b900u
+#else
 #define DMA_TASK_A_CLUSTER_BASE   0x2001b700u
+#define DMA_TASK_B_CLUSTER_BASE   0x2001c000u
+#endif
 #define DMA_TASK_A_CLUSTER_SIZE   0x100u                                      /* 256B */
 #define DMA_TASK_A_CLUSTER_LIMIT  (DMA_TASK_A_CLUSTER_BASE + DMA_TASK_A_CLUSTER_SIZE - 1u)
 #define DMA_TASK_A_GUARD_BASE     (DMA_TASK_A_CLUSTER_BASE + DMA_TASK_A_CLUSTER_SIZE) /* 0x2001b800 */
 #define DMA_TASK_A_SMPU_REGION    4u
 
-#define DMA_TASK_B_CLUSTER_BASE   0x2001c000u
 #define DMA_TASK_B_CLUSTER_SIZE   0x100u                                      /* 256B */
 #define DMA_TASK_B_CLUSTER_LIMIT  (DMA_TASK_B_CLUSTER_BASE + DMA_TASK_B_CLUSTER_SIZE - 1u)
 #define DMA_TASK_B_GUARD_BASE     (DMA_TASK_B_CLUSTER_BASE + DMA_TASK_B_CLUSTER_SIZE) /* 0x2001c100 */
@@ -471,5 +496,4 @@ static void SMPU_SetupTaskRegions(void)
         Error_Handler();
     }
 }
-
-
+#endif /* !MEDIATOR_INSECURE */

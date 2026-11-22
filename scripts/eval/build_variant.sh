@@ -40,4 +40,9 @@ cp $P/NonSecure/Debug/*_NonSecure.elf $P/NonSecure/Debug/*_NonSecure.map $P/NonS
   (cd "$OUT" && sha256sum *.elf)
   "$STBIN/arm-none-eabi-size" "$OUT"/*.elf
 } > "$OUT/manifest.txt"
-scripts/eval/check_layout.sh "$OUT"/*_NonSecure.elf
+# MEDIATOR_INSECURE (cmpMemUsage.md): no S-MPU/MPCBB, NS layout differs and Secure has no hardcoded address
+case "$DEFS" in
+  *MEDIATOR_INSECURE*) echo "layout check skipped (MEDIATOR_INSECURE)";;
+  *EVAL_MEM*) LAYOUT_EXPECT=2001b500 scripts/eval/check_layout.sh "$OUT"/*_NonSecure.elf;;
+  *) scripts/eval/check_layout.sh "$OUT"/*_NonSecure.elf;;
+esac
