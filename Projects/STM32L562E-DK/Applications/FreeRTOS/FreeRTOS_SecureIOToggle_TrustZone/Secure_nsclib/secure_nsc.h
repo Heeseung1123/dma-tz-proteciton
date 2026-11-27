@@ -66,6 +66,7 @@ int SECURE_dma_m2m_start(void*, void*, uint32_t);
 #endif
 #if MEDIATOR_ASM
 int SECURE_dma_m2m_start_asm(void*, void*, uint32_t);
+int SECURE_dma_m2m_start_svc(void*, void*, uint32_t);   /* NS SVC_Handler 전용 (Handler mode 에서만 수행) */
 #endif
 #if !defined(EVAL_MEM)
 int SECURE_dma_m2m_start_table(void*, void*, uint32_t);   /* 테이블 방식 비교 대상 (secure_nsc.c) */

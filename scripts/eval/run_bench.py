@@ -11,7 +11,7 @@ NAMES = {1: ['ns_calib'], 2: ['empty_nsc'], 3: ['start_total', 'inner_t4_t1'],
          9: ['isr_cal_s', 'tk_cal_s'], 10: ['isr_s', 'tk_s'], 11: ['isr_cal_n', 'tk_cal_n'], 12: ['isr_n', 'tk_n'],
          13: ['start_asm_total', 'inner_asm_t4_t1'], 14: ['inner_asm_calib'],
          15: ['alloc'], 16: ['nsc_asm0'], 17: ['nsc_fpclr'], 18: ['start_m1'], 19: ['start_m2'],
-         20: ['ctx_v0'], 21: ['ctx_v1'], 22: ['ctx_v2']}
+         20: ['ctx_v0'], 21: ['ctx_v1'], 22: ['ctx_v2'], 23: ['start_svc'], 24: ['svc_empty']}
 gdb.execute('set pagination off'); gdb.execute('set confirm off')
 gdb.execute('file %s/%s' % (d, files['_NonSecure']))
 gdb.execute('target remote localhost:61234')

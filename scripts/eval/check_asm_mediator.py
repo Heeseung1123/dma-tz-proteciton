@@ -22,11 +22,13 @@ def sym(elf, name):
         if len(p) == 3 and p[2] == name: return int(p[0], 16)
     raise gdb.GdbError('no symbol ' + name)
 
-asm = True
-try: VENEER = sym(NSE, '__SECURE_dma_m2m_start_asm_veneer')
-except gdb.GdbError: asm = False; VENEER = sym(NSE, '__SECURE_dma_m2m_start_veneer')
-vname = '__SECURE_dma_m2m_start%s_veneer' % ('_asm' if asm else '')
+# 경로: svc (SVC fast path -> SECURE_dma_m2m_start_svc) > asm (Thread mode 직접) > C. 이 빌드가 실제로 부르는 veneer 를 고른다.
 dis = subprocess.run(['arm-none-eabi-objdump', '-d', NSE], capture_output=True, text=True).stdout
+for kind, vname in [('svc', '__SECURE_dma_m2m_start_svc_veneer'), ('asm', '__SECURE_dma_m2m_start_asm_veneer'), ('C', '__SECURE_dma_m2m_start_veneer')]:
+    if '<%s>' % vname in dis and ('bl\t' in dis) and any(('bl\t' in l and '<%s>' % vname in l) for l in dis.splitlines()):
+        break
+VENEER = sym(NSE, vname)
+asm = kind
 RET = [int(l.split(':')[0], 16) + 4 for l in dis.splitlines() if ('bl\t' in l and '<%s>' % vname in l)]
 S_BUSY = sym(SEE, 's_busy')
 BASE = sym(NSE, 's_dmaTaskMem')
@@ -111,7 +113,7 @@ except gdb.error as e:
     heap = 'read failed: %s' % e
 with open(d + '/func_check.txt', 'w') as f:
     w = lambda s: (f.write(s + '\n'), print(s))
-    w('mediator = %s (veneer 0x%x, return sites %s)' % ('asm' if asm else 'C', VENEER, [hex(a) for a in RET]))
+    w('mediator = %s (veneer 0x%x, return sites %s)' % (kind, VENEER, [hex(a) for a in RET]))
     w('pc after 3 s = %s / after +12 s = %s' % (pc0, pc1))
     w('calls = %d (normal ok %d, normal reject %d), doorbell = %d, duplicate return hits ignored = %d' % (log['enter'], log['ok'], log['rej'], log['doorbell'], log['dup']))
     w('s_busy right after each normal return = %s' % log['busy_after'])

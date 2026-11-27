@@ -406,6 +406,9 @@ extern void vClearInterruptMask( uint32_t ulMask ) /* __attribute__(( naked )) P
 #define portSVC_RAISE_PRIVILEGE            103
 #define portSVC_SYSTEM_CALL_EXIT           104
 #define portSVC_YIELD                      105
+/* DMA 중재자 SVC 경로 (configDMA_MEDIATOR_SVC, cmpAsmMediator.md §9). SVC_Handler 맨 앞의 fast path 가 처리한다. */
+#define portSVC_DMA_M2M_START              110   /* r0-r2 = src, dst, len -> SECURE_dma_m2m_start_svc, r0 = 결과 */
+#define portSVC_BENCH_EMPTY                111   /* BENCH_DECOMP 빌드 전용: 아무 일 없이 복귀 (SVC 자체 비용) */
 /*-----------------------------------------------------------*/
 
 /**

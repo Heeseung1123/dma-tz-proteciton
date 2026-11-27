@@ -420,6 +420,74 @@ int SECURE_dma_m2m_start_asm(void *src_buf, void *dst_buf, uint32_t len)
         "bxns   lr                      \n"
     );
 }
+
+/*
+ * SVC 경로용 중재자 (cmpAsmMediator.md §9, 후보 A). NS SVC_Handler 의 fast path (portasm.c, SVC #110) 만 부른다.
+ * NS Handler mode 에서 들어오므로 Secure 도 Handler mode 이고, Secure 실행 중 예외 프레임은 MSP_S (Secure 부팅
+ * 스택) 에 쌓인다. 호출 Task 의 PSP_S (0 일 수 있음) 는 쓰이지 않는다 [아키텍처 도출].
+ * 그래서 SECURE_dma_m2m_start_asm 과 달리 PRIMASK_S 를 쓰지 않는다. 원자성은 다음으로 성립한다.
+ *  - 다른 NS 요청이 끼어들 수 없다: SVC 는 우선순위가 같거나 높은 예외 안에서 다시 발생하지 못하고 (HardFault),
+ *    PendSV 는 SVC 가 끝난 뒤에 돈다 [아키텍처 도출].
+ *  - DMA ISR 이 끼어들어도 문제없다: ISR 은 s_busy 를 1 -> 0 으로만 바꾸고, 전송 중(s_busy = 1)에만 돈다.
+ *    ldrb 에서 1 을 보면 거부하고, 0 을 봤다면 채널이 쉬는 중이라 ISR 이 오지 않는다 [코드].
+ * Thread mode (IPSR = 0) 호출은 바로 거부한다. 다만 그 검사 자체가 Thread mode Secure 실행이라, context 없는 Task 가
+ * 직접 부르면 §8 과 같은 PSP_S 문제가 남는다 (자기 자신을 멈추게 할 수 있는 DoS). stock Secure context NSC 함수들도
+ * 같은 성질이다 [추정].
+ * 레지스터: r0-r3, r12. 본문과 정리는 SECURE_dma_m2m_start_asm 과 같다 (cpsid/cpsie 만 없고 IPSR 검사가 있다).
+ */
+__attribute__((cmse_nonsecure_entry, naked, used))
+int SECURE_dma_m2m_start_svc(void *src_buf, void *dst_buf, uint32_t len)
+{
+    (void)src_buf; (void)dst_buf; (void)len;
+    __asm volatile (
+        "mrs    r3, ipsr                \n"
+        "cbz    r3, 3f                  \n"   /* Thread mode 호출 거부 */
+        MED_ASM_TS(g_benchT1)
+        "movw   r12, #:lower16:s_busy   \n"
+        "movt   r12, #:upper16:s_busy   \n"
+        "ldrb   r3, [r12]               \n"
+        "cbnz   r3, 3f                  \n"
+        "movs   r3, #1                  \n"
+        "strb   r3, [r12]               \n"
+        "movw   r3, #0x0008             \n"
+        "movt   r3, #0x5002             \n"
+        "str    r0, [r3, #8]            \n"
+        "str    r1, [r3, #12]           \n"
+        "str    r2, [r3, #4]            \n"
+        "subs   r2, r2, #1              \n"
+        "adds   r2, r2, r1              \n"
+        "bcs    2f                      \n"
+        "ttat   r0, r1                  \n"
+        "ttat   r12, r2                 \n"
+        "cmp    r0, r12                 \n"
+        "bne    2f                      \n"
+        "tst    r12, #0x80000           \n"
+        "beq    2f                      \n"
+        "ttt    r0, r1                  \n"
+        "ttt    r12, r2                 \n"
+        "cmp    r0, r12                 \n"
+        "bne    2f                      \n"
+        "tst    r12, #0x200000          \n"
+        "beq    2f                      \n"
+        "ldr    r12, [r3]               \n"
+        "orr    r12, r12, #1            \n"
+        "str    r12, [r3]               \n"
+        MED_ASM_TS(g_benchT4)
+        "movs   r0, #0                  \n"
+        "mov    r12, lr                 \n"
+        "bxns   lr                      \n"
+        "2:                             \n"
+        "movw   r12, #:lower16:s_busy   \n"
+        "movt   r12, #:upper16:s_busy   \n"
+        "movs   r0, #0                  \n"
+        "strb   r0, [r12]               \n"
+        "3:                             \n"
+        "mov    r0, #-1                 \n"
+        "mov    r12, lr                 \n"
+        "msr    APSR_nzcvq, lr          \n"
+        "bxns   lr                      \n"
+    );
+}
 #endif /* MEDIATOR_ASM */
 
 #if !defined(EVAL_MEM)   /* table-search comparison. EVAL_MEM = disable (also remove the secure_nsc.h decl and BENCH_TABLE tests) */

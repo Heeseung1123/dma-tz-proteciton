@@ -250,6 +250,19 @@ void DFSDM1_FLT3_IRQHandler(void)
 #endif /* MEDIATOR_INSECURE */
 #endif
 
+#if configDMA_MEDIATOR_SVC
+/* DMA 요청을 SVC #portSVC_DMA_M2M_START 로 보낸다 (cmpAsmMediator.md §9). NS SVC_Handler fast path 가
+ * Handler mode 에서 SECURE_dma_m2m_start_svc 를 부르고, 결과를 stacked r0 에 써 준다. 비특권 Task 에서도 쓸 수 있다. */
+static inline int App_DmaStartSvc(void *src, void *dst, uint32_t len)
+{
+    register uint32_t r0 __asm("r0") = (uint32_t)src;
+    register uint32_t r1 __asm("r1") = (uint32_t)dst;
+    register uint32_t r2 __asm("r2") = len;
+    __asm volatile ("svc %[n]" : "+r"(r0) : "r"(r1), "r"(r2), [n] "i"(portSVC_DMA_M2M_START) : "memory");
+    return (int)r0;
+}
+#endif
+
 /* One M2M transfer through the Secure mediator; returns after completion (0) or on reject (-1).
  * Caller holds the DMA mutex. B blocks on a task notification, A spins on dmaDone. */
 static int App_DmaM2M(dma_task_globals_t *g, void *src, void *dst, uint32_t len)
@@ -262,8 +275,10 @@ static int App_DmaM2M(dma_task_globals_t *g, void *src, void *dst, uint32_t len)
     g->dmaPending = 1u;          /* set before start: the ISR may run right after EN */
 #if defined(MEDIATOR_INSECURE)
     int r = Insecure_dma_m2m_start(src, dst, len);
+#elif configDMA_MEDIATOR_SVC
+    int r = App_DmaStartSvc(src, dst, len);            /* SVC -> Handler mode NSC (후보 A) */
 #elif MEDIATOR_ASM
-    int r = SECURE_dma_m2m_start_asm(src, dst, len);   /* stackless mediator */
+    int r = SECURE_dma_m2m_start_asm(src, dst, len);   /* stackless mediator (Thread mode, §8 문제 있음) */
 #else
     int r = SECURE_dma_m2m_start(src, dst, len);
 #endif

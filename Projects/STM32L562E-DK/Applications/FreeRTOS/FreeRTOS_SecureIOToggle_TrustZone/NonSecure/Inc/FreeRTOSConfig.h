@@ -72,6 +72,15 @@
 #define configMAX_PRIORITIES                     ( 56 )
 #define configMINIMAL_STACK_SIZE                 ((uint16_t)512)
 #define configMINIMAL_SECURE_STACK_SIZE          ((uint16_t)1024)
+/* DMA 중재자를 SVC fast path 로 부른다 (portasm.c SVC_Handler, cmpAsmMediator.md §9). Secure 의 asm 중재자
+ * (MEDIATOR_ASM, 기본 1) 가 있어야 하고, Insecure 기준선에는 Secure 중재자가 없다. */
+#ifndef configDMA_MEDIATOR_SVC
+#if defined(MEDIATOR_INSECURE) || (defined(MEDIATOR_ASM) && (MEDIATOR_ASM == 0))
+#define configDMA_MEDIATOR_SVC                   0
+#else
+#define configDMA_MEDIATOR_SVC                   1
+#endif
+#endif
 #define configTOTAL_HEAP_SIZE                    ((size_t)8192)
 #define configMAX_TASK_NAME_LEN                  ( 16 )
 #define configUSE_TRACE_FACILITY                 1

@@ -1,0 +1,13 @@
+mediator = svc (veneer 0x8046508, return sites ['0x8042aec'])
+pc after 3 s = prvIdleTask + 12 in section .privileged_functions / after +12 s = prvCheckTasksWaitingTermination + 58 in section .privileged_functions
+calls = 27 (normal ok 21, normal reject 0), doorbell = 21, duplicate return hits ignored = 0
+s_busy right after each normal return = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+cluster A[0:8] = 00 01 02 03 04 05 06 07
+cluster B[0:8] = 00 01 02 03 04 05 06 07
+Secure xFreeBytesRemaining = 8152
+tamper #4 a-1 다른 Task 의 Cluster            dst=0x2001b700 len=0x8 -> r0=-1 s_busy=0
+tamper #6 a-2 자기 globals (Cluster 밖)       dst=0x2001b900 len=0x8 -> r0=-1 s_busy=0
+tamper #8 a-3 len 이 Cluster 넘어 가드까지        dst=0x2001b700 len=0x120 -> r0=-1 s_busy=0
+tamper #10 a-4 len = 0                      dst=0x2001b700 len=0x0 -> r0=-1 s_busy=0
+tamper #12 a-5 주소 오버플로 (len = 2^32-4)       dst=0x2001b700 len=0xfffffffc -> r0=-1 s_busy=0
+tamper #14 a-6 Secure 주소 (s_busy)           dst=0x30000040 len=0x8 -> r0=-1 s_busy=0

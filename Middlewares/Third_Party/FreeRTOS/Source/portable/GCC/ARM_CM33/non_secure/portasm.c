@@ -552,6 +552,7 @@ void vClearInterruptMask( __attribute__( ( unused ) ) uint32_t ulMask ) /* __att
             ".extern vPortSVCHandler_C      \n"
             ".extern vSystemCallEnter       \n"
             ".extern vSystemCallExit        \n"
+            ".extern SECURE_dma_m2m_start_svc \n"
             "                               \n"
             "tst lr, #4                     \n"
             "ite eq                         \n"
@@ -560,6 +561,18 @@ void vClearInterruptMask( __attribute__( ( unused ) ) uint32_t ulMask ) /* __att
             "                               \n"
             "ldr r1, [r0, #24]              \n"
             "ldrb r2, [r1, #-2]             \n"
+        #if ( configDMA_MEDIATOR_SVC == 1 )
+            /* DMA 중재자 fast path (cmpAsmMediator.md §9): Handler mode 에서 NSC 를 부르면 Secure 도 Handler mode 라
+             * MSP_S 를 쓴다. 그래서 호출 Task 에 Secure context 가 없어도 Secure 실행 중 예외 프레임이 MSP_S 에 쌓이고,
+             * PendSV 는 이 SVC 가 끝난 뒤에 돈다. stacked r0-r2 를 인자로 넘기고 결과를 stacked r0 에 쓴다. */
+            "cmp r2, %2                     \n"
+            "beq dma_m2m_start_svc          \n"
+            #if defined( BENCH_DECOMP )
+            "cmp r2, %3                     \n"
+            "it eq                          \n"
+            "bxeq lr                        \n"   /* portSVC_BENCH_EMPTY */
+            #endif
+        #endif
             "cmp r2, %0                     \n"
             "blt syscall_enter              \n"
             "cmp r2, %1                     \n"
@@ -574,8 +587,17 @@ void vClearInterruptMask( __attribute__( ( unused ) ) uint32_t ulMask ) /* __att
             "    mov r1, lr                 \n"
             "    b vSystemCallExit          \n"
             "                               \n"
+        #if ( configDMA_MEDIATOR_SVC == 1 )
+            "dma_m2m_start_svc:             \n"
+            "    push {r0, lr}              \n"   /* 프레임 주소, EXC_RETURN (MSP_NS 8 B 정렬 유지) */
+            "    ldm r0, {r0-r2}            \n"   /* stacked r0-r2 */
+            "    bl SECURE_dma_m2m_start_svc \n"
+            "    pop {r1, lr}               \n"
+            "    str r0, [r1]               \n"   /* stacked r0 = 결과 */
+            "    bx lr                      \n"
+        #endif
             : /* No outputs. */
-            : "i" ( NUM_SYSTEM_CALLS ), "i" ( portSVC_SYSTEM_CALL_EXIT )
+            : "i" ( NUM_SYSTEM_CALLS ), "i" ( portSVC_SYSTEM_CALL_EXIT ), "i" ( portSVC_DMA_M2M_START ), "i" ( portSVC_BENCH_EMPTY )
             : "r0", "r1", "r2", "memory"
         );
     }

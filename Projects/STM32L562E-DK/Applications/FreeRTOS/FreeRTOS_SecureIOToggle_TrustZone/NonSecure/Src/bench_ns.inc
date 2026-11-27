@@ -61,6 +61,8 @@ typedef struct { volatile uint32_t magic, id, n; } bench_hdr_t;
 #define BENCH_ID_CTX_V0       20u   /* BENCH_DECOMP: 전환, context 없음 + asm NSC */
 #define BENCH_ID_CTX_V1       21u   /* BENCH_DECOMP: 전환, context 있음 + asm NSC (Save/Load 만) */
 #define BENCH_ID_CTX_V2       22u   /* BENCH_DECOMP: 전환, context 있음 + C NSC (Save/Load + FP 프레임) */
+#define BENCH_ID_START_SVC    23u   /* BENCH_DECOMP: SVC 경로 (App_DmaStartSvc) */
+#define BENCH_ID_SVC_EMPTY    24u   /* BENCH_DECOMP: 빈 SVC (portSVC_BENCH_EMPTY), SVC 자체 비용 */
 #define BENCH_ID_ALLOC        15u   /* BENCH_ALLOC 빌드: portALLOCATE_SECURE_CONTEXT 1회 (C 중재자 Task 의 1회 비용) */
 #define BENCH_ID_END           0xFFu
 
@@ -279,11 +281,16 @@ extern int SECURE_bench_start_m1(void *, void *, uint32_t);
 extern int SECURE_bench_start_m2(void *, void *, uint32_t);
 BENCH_DEFINE_START_ONCE(bench_start_m1_once, SECURE_bench_start_m1)
 BENCH_DEFINE_START_ONCE(bench_start_m2_once, SECURE_bench_start_m2)
+#if configDMA_MEDIATOR_SVC
+BENCH_DEFINE_START_ONCE(bench_start_svc_once, App_DmaStartSvc)
+static inline void bench_svc_empty(void) { __asm volatile ("svc %0" :: "i"(portSVC_BENCH_EMPTY) : "r0", "r1", "r2", "memory"); }
+#endif
 
 /* 문맥 전환: 같은 우선순위의 두 Task 가 taskYIELD 로 번갈아 돈다. 구간 = 나가는 Task 의 t0 (yield 직전)
  * ~ 들어오는 Task 의 t1 (yield 복귀 직후). SVC/PendSV, Secure Save/Load (있으면), FP 저장/복원 (있으면),
  * 다음 Task 선택, MPU 영역 재설정이 들어간다. NSC 호출은 t0 앞에 있어 구간 밖이다.
- *   mode 0: Secure context 없음, 매 회 asm 중재자 호출 (asm 중재자 Task 와 같은 상태)
+ *   mode 0: Secure context 없음, 매 회 중재자 호출. configDMA_MEDIATOR_SVC 이면 SVC 경로(후보 A), 아니면 Thread mode asm
+ *           중재자 (§8 문제로 가끔 멈춘다)
  *   mode 1: context 있음, asm 중재자 호출 (FPCA 가 서지 않음) -> mode 0 과의 차이 = Secure Save + Load NSC
  *   mode 0/1 의 호출은 SECURE_dma_m2m_start_asm(NULL, NULL, 0): len = 0 이라 바로 거부되고 DMA 는 시작하지 않는다.
  *   처음에는 SECURE_bench_nsc_asm0 (cpsid 없음) 을 썼는데, context 없는 Task 에서 그 함수 안으로 인터럽트가 들어오면
@@ -307,6 +314,9 @@ static void bench_cx_task(void *p)
         if (s_cx.i >= s_cx.n) { s_cx.done++; vTaskSuspend(NULL); }
         s_cx.valid = 1u;
         if (mode == 2u) { (void)SECURE_nop3(NULL, NULL, 0); }
+#if configDMA_MEDIATOR_SVC
+        else if (mode == 0u) { (void)App_DmaStartSvc(NULL, NULL, 0); }
+#endif
         else            { (void)SECURE_dma_m2m_start_asm(NULL, NULL, 0); }
         __DSB(); __ISB();
         s_cx.t0 = DWT->CYCCNT;
@@ -356,6 +366,10 @@ static void bench_decomp_main(void)
     BENCH_LOOP_START(BENCH_ID_START_ASM, bench_start_asm_once);
     BENCH_LOOP_START(BENCH_ID_START_M1,  bench_start_m1_once);
     BENCH_LOOP_START(BENCH_ID_START_M2,  bench_start_m2_once);
+#if configDMA_MEDIATOR_SVC
+    BENCH_LOOP_START(BENCH_ID_START_SVC, bench_start_svc_once);
+    BENCH_LOOP_NSC(BENCH_ID_SVC_EMPTY,  (bench_svc_empty(), 0));
+#endif
 
     bench_cx_run(BENCH_ID_CTX_V0, 0u);
     bench_cx_run(BENCH_ID_CTX_V1, 1u);

@@ -13,6 +13,7 @@
 | Secure context 할당 비용 | **8 조건 완료** (§5, off/warm. cold 는 지원 안 함) |
 | 빠른 원인 분해, 문맥 전환 비용 | **8 조건 완료** (§6, §7). P1/P2 × 110/32 MHz × off/warm |
 | **안전성** | **문제 발견 (§8).** context 없는 Task 에서 asm 중재자를 반복 호출하면, 인터럽트 프레임이 PSP_S = 0 에 쌓여 멈춘다 [실측]. 기본 빌드(`MEDIATOR_ASM=1`)도 오래 돌리면 같은 문제가 날 수 있다 [추정] |
+| 후보 A (SVC 경로) | **구현, 보드 기능 확인 통과, 사이클 5/8 조건** (§9). P2/110/warm, P2/32 는 ST-LINK USB 오류(`DEV_USB_COMM_ERR`)로 중단. 기본 빌드가 이제 A 경로를 쓴다 (`configDMA_MEDIATOR_SVC`) |
 
 ## 1. 정적 비교 (빌드에서 확인한 사실)
 
@@ -291,3 +292,99 @@ cold 조건은 재지 않았다. cold 는 매 회 ICACHE 를 비우는 `SECURE_b
 | A | NS 가 SVC 를 거쳐 호출해 Secure Handler mode 에서 실행 | MSP_S 를 쓰므로 할당 0 이고 창이 없다. PendSV 는 SVC 가 끝난 뒤에 돈다 [아키텍처 도출] | NS SVC 경로 수정이 필요하고, SVC 진입·복귀 비용이 더해진다 |
 | B | DMA Task 에 작은 stock context (예: 128 B) | 수정이 적다 | Save/Load 전환 비용 (§7 V1 − V0) 이 다시 생긴다. FP 비용은 asm 이라 없다 |
 | D | guard-as-stack (`guardasstack.md`) | 가드 256 B 를 Secure 스택으로 쓰므로 할당이 0 이다 | PendSV 분기와 Suspend/Resume NSC 가 필요하다 |
+
+## 9. 후보 A: SVC 경로 [구현 + 보드 실측]
+
+### 9.1 구조
+
+```
+비특권 DMA Task ── svc #110 (r0-r2 = src, dst, len) ─▶ NS SVC_Handler (Handler mode)
+   fast path: cmp #110 → push {r0, lr} → ldm 프레임 {r0-r2} → bl SECURE_dma_m2m_start_svc (veneer → SG)
+        ─▶ Secure (Handler mode, MSP_S): IPSR 검사 → 본문 (asm 중재자와 같고 cpsid/cpsie 없음) → bxns
+   ◀─ pop {r1, lr} → stacked r0 = 결과 → bx lr (예외 복귀)
+```
+
+| 파일 | 변경 |
+|---|---|
+| `portmacrocommon.h` | `portSVC_DMA_M2M_START` (110), `portSVC_BENCH_EMPTY` (111, BENCH_DECOMP 전용) |
+| `portasm.c` | MPU v2 `SVC_Handler` 맨 앞에 fast path 를 넣었다. `configDMA_MEDIATOR_SVC == 1` 일 때만 생긴다. 다른 SVC 에는 `cmp/beq` 2 명령이 더해진다 |
+| `NonSecure/Inc/FreeRTOSConfig.h` | `configDMA_MEDIATOR_SVC`. 기본 1 이고, `MEDIATOR_INSECURE` 와 `MEDIATOR_ASM=0` 에서는 0 이다 |
+| `Secure/Src/secure_nsc.c` | `SECURE_dma_m2m_start_svc`: naked NSC 이고 r0-r3, r12 만 쓴다. Thread mode (IPSR = 0) 호출은 거부한다 |
+| `NonSecure/Src/app_freertos.c` | `App_DmaStartSvc()` (inline `svc`). `App_DmaM2M` 이 이 함수를 쓴다. Thread mode asm/C 경로는 그대로 두었다 |
+
+**왜 안전한가 [아키텍처 도출].**
+- NS Handler mode 에서 SG 를 지나면 Secure 도 Handler mode 다. 그래서 Secure 실행 중에 들어온 예외 프레임은 PSP_S 가 아니라 MSP_S (Secure 부팅 스택)에 쌓인다.
+- 이렇게 쌓인 프레임은 LIFO 로 중첩된다. PendSV 는 우선순위가 가장 낮아 이 SVC 가 끝난 뒤에 돌기 때문에, Secure 프레임이 남은 채로 Task 가 바뀌지 않는다.
+- 원자성: SVC 는 다시 발생할 수 없고, DMA ISR 은 `s_busy` 를 1 → 0 으로만 바꾼다. 그래서 PRIMASK 가 필요 없다 [코드].
+
+**남는 한계 [추정].** 악의적인 NS Task 가 SVC 를 거치지 않고 `SECURE_dma_m2m_start_svc` 를 Thread mode 에서 직접 부르면, IPSR 검사 자체가 Thread mode Secure 실행이다. 그래서 §8 과 같은 PSP_S 문제로 시스템을 멈출 수 있다 (DoS).
+context 가 없는 Task 가 아무 NSC 나 부를 때 생기는 문제이고, stock Secure context NSC 도 같다. 기밀성·무결성 문제는 아니다.
+
+### 9.2 기능 확인 [실측, `results/asm_func/svc/func_check.txt`]
+
+| 확인 | 결과 |
+|---|---|
+| 정상 호출 | 21 회 전부 0 |
+| doorbell 수 | 21 |
+| Cluster | A/B 모두 `00..07` |
+| Secure heap | 8152 (DMA Task context 할당 0) |
+| 변조 6 종 | 전부 −1, `s_busy` = 0 |
+| §8 문제 재현 여부 | §7 V0 (context 없는 Task, 매 회 중재자 호출, 1000 회 이상 전환) 이 5 조건 모두 재시도 없이 끝났다 |
+
+Thread mode asm 경로에서는 같은 측정이 약 절반 확률로 멈췄다.
+P2/110/warm 재시도는 gdbserver 연결 오류(`vMustReplyEmpty` timeout → 이후 "Target is not responding")였고, 타깃이 멈춘 것은 아니다.
+
+### 9.3 요청 1 회 비용 [실측, N=1000, 바깥 중앙값 cycle, `results/svc/*`]
+
+모두 같은 빌드(`BENCH_PHASE BENCH_DECOMP`)에서 쟀다. "빈 SVC" 는 fast path 에서 바로 `bx lr` 하는 SVC #111 이다 (SVC 진입·복귀 + 비교 4 개).
+
+| 프로파일 | 클럭 | 캐시 | C (Thread) | asm (Thread, §8 문제) | **SVC 경로 (A)** | 빈 SVC | SVC − asm | SVC − 빈 SVC (Handler mode 중재자) | asm − 빈 asm NSC (Thread mode 중재자) | A / C | SVC 최대 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| P1 | 110 | off | 367 | 145 | **228** | 62 | +83 | 166 | 85 | 62 % | 649 |
+| P1 | 110 | warm | 167 | 75 | **157** | 34 | +82 | 123 | 52 | 94 % | 362 |
+| P1 | 32 | off | 180 | 69 | **115** | 36 | +46 | 79 | 40 | 64 % | 321 |
+| P1 | 32 | warm | 154 | 61 | **117** | 34 | +56 | 83 | 38 | 76 % | 299 |
+| P2 | 110 | off | 273 | 141 | **228** | 62 | +87 | 166 | 77 | 84 % | 644 |
+| P2 | 110 | warm | 미측정 |
+| P2 | 32 | off | 미측정 |
+| P2 | 32 | warm | 미측정 |
+
+문맥 전환 1회 (V0 = context 없음 + SVC 경로 호출, V1 = context + asm, V2 = context + C NSC)
+
+| 프로파일 | 클럭 | 캐시 | V0 (A Task) | V1 | V2 (C Task) | V2 − V0 |
+|---|---|---|---|---|---|---|
+| P1 | 110 | off | 709 | 1253 | 1356 | +647 |
+| P1 | 110 | warm | 300 | 616 | 672 | +371 |
+| P1 | 32 | off | 366 | 637 | 762 | +396 |
+| P1 | 32 | warm | 300 | 558 | 664 | +364 |
+| P2 | 110 | off | 709 | 1198 | 1301 | +592 |
+
+- **A 는 C 보다 빠르고 Thread asm 보다 느리다.** C 의 62 ~ 94 % 다.
+  - off: 110 MHz 에서 C 367 → A 228, 32 MHz 에서 180 → 115.
+  - Thread asm 보다 +46 ~ +87 이 더 든다.
+- **SVC 를 거치는 비용 (off, P1/110).** SVC − asm = +83 은 다음 둘로 나뉜다.
+  1. 빈 SVC 62: SVC 진입과 예외 복귀, 그리고 비교 4 개.
+  2. 나머지 21: fast path 명령(`push/ldm/bl/pop/str`)과 NS veneer.
+
+  교차 확인하면 같은 값이 나온다. SVC − 빈 SVC = 166 (NSC 진입부터 중재자 본문, 복귀까지)이고, Thread mode asm 전체 145 (빈 asm NSC 60 + 본문 85)보다 21 많다.
+  Handler mode 라서 중재자 본문이 느려지지는 않는다 [실측 값 + 추정 분해].
+- **warm 에서 차이가 큰 이유 [추정].** P1/110/warm 은 SVC − 빈 SVC = 123 으로, Thread mode 75 보다 48 많다.
+  NS `SVC_Handler` 가 `.privileged_functions` 에 있어 다른 코드와 1-way ICACHE 줄이 겹치는 것으로 보인다. `icache_mon.py` 로 확인하지는 않았다.
+- **bench 조건 주의.** bench Task A 는 이전 C NSC 호출로 FPCA = 1 이다. 그래서 SVC 진입이 FP 확장 프레임이 된다 (빈 SVC 에도 같이 들어감).
+  실제 A 경로 DMA Task 는 FP 명령을 실행하지 않으므로 FPCA = 0 이고, SVC 진입이 조금 더 쌀 것이다 [추정: 따로 재지 않음].
+- **최댓값.** A 는 본문을 마스킹하지 않으므로, 틱 같은 더 높은 우선순위 예외가 끼면 최댓값이 커진다 (예: 649).
+
+### 9.4 문맥 전환과 전체 비용
+
+V0 는 이제 A 경로 Task 다 (context 없음, 매 회 SVC 경로 호출). V1 과 V2 의 정의는 §7 과 같다.
+`portYIELD` 도 SVC(#105)라서 fast path 비교 2 명령이 더해진다. 그래서 V0 가 §7 의 698 에서 709 로 늘었다 (P1/110/off).
+
+전체 비용 (P1/110/off, cycle):
+
+| 항목 | C 중재자 | asm (Thread, §8 문제) | **A (SVC)** |
+|---|---|---|---|
+| Secure context 할당 (Task 당 1 회) | 2229 | 0 | **0** |
+| 요청 1 회 | 367 | 145 | **228** |
+| 문맥 전환 1 회 | 1356 | 698 | **709** |
+| Secure heap / Task | 1040 B | 0 | **0** |
+| PSP_S 문제 (§8) | 없음 | 있음 | **없음** (직접 호출하는 악성 Task 의 DoS 는 남음) |

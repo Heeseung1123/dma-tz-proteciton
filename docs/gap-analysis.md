@@ -146,3 +146,7 @@ CH2 는 중재자와 가드 검사 없이 NS 가 직접 쓴다. 기본 빌드와
 **H 보완 (2026-11-27, 보드 실측):** H-2 의 "알려진 구멍" 은 SG ~ `cpsid` 창에 그치지 않는다.
 마스킹 중 pending 된 인터럽트가 `cpsie` 뒤, `bxns` 전에 Secure 에서 받아들여져 PSP_S = 0 에 프레임이 쌓인다 [실측: PSP_S 0xFFFFFFE0, EXC_RETURN 0xFFFFFFFD / 원인 추정].
 context 없는 Task 의 문맥 전환 측정에서 1000 회 중 약 절반이 멈췄다. 상세와 해결 후보 A/B/D 는 cmpAsmMediator.md §8 에 있다. 사용자 결정 대기 중이다.
+
+**H 해결 후보 A 구현 (2026-11-27, 사용자 선택).** NS `SVC_Handler` fast path (SVC #110) → Handler mode 에서 `SECURE_dma_m2m_start_svc` 를 부른다.
+Secure 예외 프레임이 MSP_S 에 쌓이므로 PSP_S 문제가 없다. 커널 `portasm.c` / `portmacrocommon.h` 를 수정했다: 논문에 없는 확장이고 `configDMA_MEDIATOR_SVC` 로 끌 수 있다.
+상세는 cmpAsmMediator.md §9 에 있다.

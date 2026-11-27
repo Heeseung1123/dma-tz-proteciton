@@ -1,0 +1,8 @@
+variant=P1_110M_off_ts0 profile=P1 S=-O0 NS=-O1 defs=[ -DBENCH_PHASE=1 -DBENCH_DECOMP]
+git=a9fb5696dca79d916c28769fb75f1c2a7d8f120e dirty= M Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM33/non_secure/portasm.c; M Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM33/non_secure/portmacrocommon.h; M Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM33/secure/secure_context.c; M Projects/STM32L562E-DK/Applications/FreeRTOS/FreeRTOS_SecureIOToggle_TrustZone/NonSecure/Inc/FreeRTOSConfig.h; M Projects/STM32L562E-DK/Applications/FreeRTOS/FreeRTOS_SecureIOToggle_TrustZone/NonSecure/Src/app_freertos.c; M Projects/STM32L562E-DK/Applications/FreeRTOS/FreeRTOS_SecureIOToggle_TrustZone/Secure/Src/secure_nsc.c; M Projects/STM32L562E-DK/Applications/FreeRTOS/FreeRTOS_SecureIOToggle_TrustZone/Secure_nsclib/secure_nsc.h;
+arm-none-eabi-gcc (GNU Tools for STM32 14.3.rel1.20251027-0700) 14.3.1 20250623
+854195ae4bdd8f027649e87e44a5b6d19eea5bd306d542eaddef6ebcb909d686  FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf
+fdd96eba1f82ec91d7431a1214f583a162e2116fb05e4c916351dd33ea555e06  FreeRTOS_SecureIOToggle_TrustZone_Secure.elf
+   text	   data	    bss	    dec	    hex	filename
+  36696	  10240	  12624	  59560	   e8a8	results/svc/P1_110M_off_ts0/FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf
+  14144	     40	  11992	  26176	   6640	results/svc/P1_110M_off_ts0/FreeRTOS_SecureIOToggle_TrustZone_Secure.elf
