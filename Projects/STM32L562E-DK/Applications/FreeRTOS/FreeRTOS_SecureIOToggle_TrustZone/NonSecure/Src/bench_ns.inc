@@ -52,11 +52,14 @@ typedef struct { volatile uint32_t magic, id, n; } bench_hdr_t;
 #define BENCH_ID_VERIFY_CALIB  6u   /* verify_inst 측정의 판독 비용 */
 #define BENCH_ID_START_TABLE   7u   /* 열: start_table 전체, 내부(T4-T1). START 와 같은 방법 */
 #define BENCH_ID_VERIFY_TABLE  8u   /* verify_table (VERIFY_CALIB 를 뺀다) */
+#define BENCH_ID_START_ASM    13u   /* 열: start_asm 전체, 내부(T4-T1). START 와 같은 방법 (9-12 는 ISR 벤치) */
+#define BENCH_ID_INNER_CALIB_ASM 14u /* start_asm 의 T1, T4 기록 비용 (movw/movt 형식) */
 #define BENCH_ID_END           0xFFu
 
 extern int      SECURE_nop3(void *a, void *b, uint32_t c);
 extern uint32_t SECURE_bench_inner(void);
 extern uint32_t SECURE_bench_inner_calib(void);
+extern uint32_t SECURE_bench_inner_calib_asm(void);
 extern uint32_t SECURE_bench_verify(void *dst, uint32_t len);
 extern uint32_t SECURE_bench_verify_calib(void);
 extern uint32_t SECURE_bench_verify_table(void *dst, uint32_t len);
@@ -126,6 +129,9 @@ static void name(uint8_t *dst, dma_task_globals_t *g, uint32_t *total)         \
 }
 BENCH_DEFINE_START_ONCE(bench_start_once,       SECURE_dma_m2m_start)
 BENCH_DEFINE_START_ONCE(bench_start_table_once, SECURE_dma_m2m_start_table)
+#if MEDIATOR_ASM
+BENCH_DEFINE_START_ONCE(bench_start_asm_once,   SECURE_dma_m2m_start_asm)
+#endif
 
 #if defined(BENCH_ISR_TS)
 /* ---- DMA 완료 ISR 비용: Secure (CH1, 중재자 + doorbell) vs Insecure (CH2, NS ISR) ----
@@ -331,6 +337,32 @@ static void Bench_Main(void)
         BENCH_ROW(i)[0] = SECURE_bench_verify_table(dst, BENCH_LEN);
     }
     bench_table_done(BENCH_ID_VERIFY_TABLE);
+
+#if MEDIATOR_ASM
+    /* ---- 스택 없는 중재자 (secure_nsc.c SECURE_dma_m2m_start_asm, gap H) ----
+     * 같은 빌드에서 C 중재자(START)와 비교한다. 보정:
+     *   start_asm 전체 = ts0 빌드 START_ASM 열0 - NS_CALIB
+     *   내부          = ts1 빌드 START_ASM 열1 - INNER_CALIB_ASM
+     *                   (T1 = cpsid 직후, T4 = EN 직후. C 쪽 T1 은 프롤로그 뒤라 구간 정의가 조금 다르다)
+     * 이 빌드의 DMA Task 는 BENCH_PHASE 라서 Secure context 가 있다. asm 경로는 PSP_S 를 쓰지 않으므로
+     * 사이클에는 영향이 없다 [아키텍처 도출]. */
+    bench_start_asm_once(dst, g, &a);   /* 예열 */
+    for (i = 0; i < BENCH_N; i++)
+    {
+        bench_before_iter();
+        bench_start_asm_once(dst, g, &a);
+        BENCH_ROW(i)[0] = a;
+        BENCH_ROW(i)[1] = SECURE_bench_inner();
+    }
+    bench_table_done(BENCH_ID_START_ASM);
+
+    for (i = 0; i < BENCH_N; i++)
+    {
+        bench_before_iter();
+        BENCH_ROW(i)[0] = SECURE_bench_inner_calib_asm();
+    }
+    bench_table_done(BENCH_ID_INNER_CALIB_ASM);
+#endif
 
     bench_table_done(BENCH_ID_END);
     for (;;) { vTaskDelay(pdMS_TO_TICKS(1000)); }

@@ -20,6 +20,16 @@ secureportNON_SECURE_CALLABLE uint32_t SECURE_bench_inner_calib(void)
     return g_benchT4 - g_benchT1;
 }
 
+#if MEDIATOR_ASM
+/* SECURE_dma_m2m_start_asm 의 T1, T4 기록 비용: 같은 MED_ASM_TS 명령을 사이에 아무것도 없이 둔다.
+ * BENCH_TS 가 없으면 MED_ASM_TS 는 비어 있어 의미 없는 값을 돌려준다 (ts1 빌드 값만 쓴다). */
+secureportNON_SECURE_CALLABLE uint32_t SECURE_bench_inner_calib_asm(void)
+{
+    __asm volatile (MED_ASM_TS(g_benchT1) MED_ASM_TS(g_benchT4) ::: "r3", "r12", "memory");
+    return g_benchT4 - g_benchT1;
+}
+#endif
+
 /* verify_inst 단독 비용 (BL/BX 포함) */
 secureportNON_SECURE_CALLABLE uint32_t SECURE_bench_verify(void *dst, uint32_t len)
 {
