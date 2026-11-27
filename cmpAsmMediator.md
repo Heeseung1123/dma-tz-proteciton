@@ -408,3 +408,72 @@ V0 는 이제 A 경로 Task 다 (context 없음, 매 회 SVC 경로 호출). V1 
   - Secure heap 을 Task 당 1040 B 아낀다.
   - 요청보다 전환이 훨씬 잦은 Task 일수록 차이가 커진다 [추정].
 - **Thread mode asm (§4) 은 요청 1 회로는 가장 싸다.** 하지만 §8 문제 때문에 context 없는 Task 에서는 쓸 수 없다. A 는 그 대가로 요청당 +46 ~ +103 을 낸다.
+
+## 10. 요약: SVC 없이 생긴 문제, SVC 로 해결되는 이유, 추가 오버헤드
+
+§8, §9 의 내용을 한곳에 모았다.
+
+### 10.1 SVC 를 쓰지 않았을 때의 문제 (Thread mode asm, 후보 C)
+
+**구조.** context 가 없는 비특권 DMA Task 가 Thread mode 에서 NSC(`SECURE_dma_m2m_start_asm`)를 직접 부른다.
+
+**실패 과정.**
+1. SG 를 지나면 CPU 는 **Secure Thread mode** 다. 이때 예외가 들어오면 하드웨어가 예외 프레임을 **현재 Secure 스택(PSP_S)**에 쌓는다 [아키텍처 도출].
+2. context 가 없는 Task 는 **PSP_S = 0** 이다. stock FreeRTOS 는 context 가 로드되지 않으면 PSP_S 와 PSPLIM_S 를 0 으로 둔다 [코드: secure_context.c].
+3. 그래서 프레임이 0 − 32 = `0xFFFFFFE0` 에 쓰이고, 복귀할 때 쓰레기 값을 꺼내 시스템이 멈춘다.
+
+**`cpsid i` 로 해결되지 않은 이유 [추정].**
+- PRIMASK_S 로 본문을 막아도, 그동안 들어온 인터럽트는 pending 으로 남아 있을 뿐이다.
+- 그 인터럽트는 `cpsie i` 직후, `bxns` 전, 아직 Secure Thread mode 일 때 받아들여져 PSP_S = 0 에 쌓인다.
+- 즉 마스킹은 위험을 없애지 못하고 복귀 지점으로 옮겼다.
+
+**보드 증거 [실측].**
+- 멈춘 시점 레지스터: PSP_S = `0xFFFFFFE0`, EXC_RETURN = `0xFFFFFFFD` (Secure Thread mode, PSP 로 복귀).
+- context 없는 Task 가 중재자를 부르며 1000 회 전환하는 측정(§7 V0)에서 약 절반이 멈췄다 (108 회째, 763 회째 등).
+- SG ~ `cpsid` 창만 위험하다면 예상 실패율은 약 3 % 다. 관찰값은 "마스킹 구간 전체에 들어온 인터럽트" 로 설명하는 쪽과 맞는다.
+- 기본 앱(초당 약 2 ~ 3 회 호출)은 수십 분 안에 멈출 수 있다 [추정].
+
+### 10.2 SVC 를 쓰면 해결되는 이유 (후보 A)
+
+```
+Task ─ svc #110 ─▶ NS SVC_Handler (Handler mode) ─ bl NSC ─▶ Secure (Handler mode)
+```
+
+- **어느 스택에 쌓이나.** Task 가 `svc` 를 하면 NS SVC_Handler 가 **Handler mode** 에서 NSC 를 부르고, Secure 도 **Handler mode** 로 실행된다.
+  Handler mode 는 항상 **MSP_S**(부팅 때 잡아 둔 Secure main 스택, 항상 유효)를 쓴다. 그래서 Secure 실행 중 예외 프레임이 PSP_S 가 아니라 MSP_S 에 쌓인다 [아키텍처 도출].
+- **중첩 예외.** MSP_S 에 차례로 쌓였다가 거꾸로 풀린다 (LIFO). 서로 충돌하지 않는다.
+- **도중에 Task 가 바뀌지 않는다.** PendSV 는 우선순위가 가장 낮아 SVC 가 끝난 뒤에야 전환이 일어난다. Secure 프레임이 남은 채로 Task 가 바뀌는 일이 없다.
+- **원자성.** SVC 는 다시 들어올 수 없고, DMA ISR 은 `s_busy` 를 1 → 0 으로만 바꾼다. 그래서 마스킹이 필요 없고 `cpsid`/`cpsie` 를 뺐다. 문제였던 복귀 창도 함께 없어졌다 [코드].
+- **보드 확인 [실측].** 같은 전환 측정을 8 조건 모두 멈춤 없이 끝냈다. 마지막 3 조건은 재시도도 없었다. 기능 확인 (정상 호출 21 회, 변조 6 종 거부) 도 통과했다 (§9.2).
+- **남는 한계 [추정].** SVC 를 거치지 않고 Thread mode 에서 NSC 를 직접 부르는 악성 NS Task 는 여전히 시스템을 멈출 수 있다 (DoS).
+  이것은 context 가 없는 Task 가 아무 NSC 나 부를 때의 공통 성질이고, stock Secure context NSC 도 같다. 기밀성·무결성 문제는 아니다.
+
+### 10.3 추가 오버헤드 [실측, 중앙값 cycle, `results/svc/summary.md`]
+
+**요청 1 회, Thread mode asm 대비 (P1/110 MHz/cache off).**
+
+| 항목 | cycle |
+|---|---|
+| 빈 SVC 왕복 (진입, 예외 복귀, 번호 비교) | +62 |
+| fast path 명령 (`push/ldm/bl/pop/str`) + NS veneer | +21 |
+| **합계** | **+83** (145 → 228) |
+
+- 8 조건 전체로는 **+46 ~ +103** 이다. 32 MHz 에서 작고 (+46 ~ +61), 캐시를 켜면 커진다 (+82 ~ +103).
+- 캐시를 켰을 때 커지는 이유는 `SVC_Handler` 의 ICACHE 충돌로 보인다 [추정, 미확인].
+- Handler mode 라서 중재자 본문이 느려지지는 않는다 (SVC − 빈 SVC 166 = Thread asm 145 + fast path 21).
+
+**다른 SVC 에 대한 영향.** `portYIELD` 를 포함한 다른 모든 SVC 에 비교 명령 2 개가 더해진다. 문맥 전환 1 회가 698 에서 709 로 늘었다 (§9.4).
+
+**C 중재자(기존) 대비, P1/110/off.**
+
+| | C | **A (SVC)** | 차이 |
+|---|---|---|---|
+| 요청 1 회 | 367 | 228 | −139 (P2: −7 ~ −45) |
+| 문맥 전환 1 회 | 1356 | 709 | −647 |
+| Secure context 할당 (Task 당 1 회) | 2229 | 0 | −2229 |
+| Secure heap / Task | 1040 B | 0 | −1040 B |
+
+**결론.**
+- SVC 경로는 Thread mode 직접 호출보다 요청당 46 ~ 103 cycle 을 더 낸다. 그 대가로 시스템이 멈추지 않는다.
+- 그래도 모든 조건에서 C 중재자보다 빠르다. 다만 요청 1 회 이득은 -O1 에서 작다.
+- 큰 이득은 Task 쪽에 있다: 문맥 전환, context 할당, 메모리.
