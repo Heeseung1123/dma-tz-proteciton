@@ -94,7 +94,7 @@ static Config loadConfig() {
   return C;
 }
 
-using FnSet = SmallPtrSet<Function *, 128>;
+using FnSet = SmallPtrSet<Function *, 32>; // SmallSize 상한 32 (LLVM 18)
 
 static Function *calleeOf(const CallBase &CB) {
   return dyn_cast<Function>(CB.getCalledOperand()->stripPointerCasts());

@@ -23,6 +23,7 @@
 //       DMA_CLUSTER_STRICT=1 이면 error 진단이 있을 때 링크 실패
 //===----------------------------------------------------------------------===//
 
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -220,7 +221,9 @@ struct State {
 //===----------------------------------------------------------------------===//
 // 2) reachable function set
 //===----------------------------------------------------------------------===//
-using FnSet = SmallPtrSet<Function *, 64>;
+// 삽입 순서 보존 (포인터 순서 순회 → 1차/2차 링크 JSON 이 달라지는 비결정성 방지).
+// SmallPtrSet 의 SmallSize 상한은 32 (LLVM 18 static_assert).
+using FnSet = SmallSetVector<Function *, 32>;
 
 static FnSet reach(Function *Entry,
                    const std::map<FunctionType *, std::vector<Function *>> &AT) {
@@ -228,7 +231,7 @@ static FnSet reach(Function *Entry,
   SmallVector<Function *, 32> WL{Entry};
   while (!WL.empty()) {
     Function *F = WL.pop_back_val();
-    if (!Seen.insert(F).second || F->isDeclaration())
+    if (!Seen.insert(F) || F->isDeclaration())
       continue;
     for (Instruction &I : instructions(*F)) {
       auto *CB = dyn_cast<CallBase>(&I);
@@ -301,7 +304,7 @@ static void trace(State &S, const Value *V, StringRef Task, const FnSet &R,
     bool Any = false;
     for (User *U : P->users())
       if (auto *CB = dyn_cast<CallBase>(U))
-        if (calleeOf(*CB) == P && R.contains(CB->getFunction())) {
+        if (calleeOf(*CB) == P && R.count(CB->getFunction())) {
           Any = true;
           trace(S, CB->getArgOperand(A->getArgNo()), Task, R, *CB, Depth + 1,
                 Visited);
@@ -483,6 +486,11 @@ struct DmaClusterPass : PassInfoMixin<DmaClusterPass> {
       }
       Clusters[Key].push_back(G);
     }
+    // 버퍼 순서 = 이름 순 (S.Bufs 는 포인터 키 → 실행마다 순서가 다를 수 있음)
+    for (auto &[Key, Gs] : Clusters)
+      llvm::sort(Gs, [](GlobalVariable *A, GlobalVariable *B) {
+        return A->getName() < B->getName();
+      });
 
     const DataLayout &DL = M.getDataLayout();
     json::Array JClusters;
