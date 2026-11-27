@@ -13,7 +13,7 @@
 | Secure context 할당 비용 | **8 조건 완료** (§5, off/warm. cold 는 지원 안 함) |
 | 빠른 원인 분해, 문맥 전환 비용 | **8 조건 완료** (§6, §7). P1/P2 × 110/32 MHz × off/warm |
 | **안전성** | **문제 발견 (§8).** context 없는 Task 에서 asm 중재자를 반복 호출하면, 인터럽트 프레임이 PSP_S = 0 에 쌓여 멈춘다 [실측]. 기본 빌드(`MEDIATOR_ASM=1`)도 오래 돌리면 같은 문제가 날 수 있다 [추정] |
-| 후보 A (SVC 경로) | **구현, 보드 기능 확인 통과, 사이클 8 조건 완료** (§9). 기본 빌드가 이제 A 경로를 쓴다 (`configDMA_MEDIATOR_SVC`) |
+| 후보 A (SVC 경로) | **구현, 보드 기능 확인 통과, 사이클 8 조건 + P2 cold 2 조건 완료** (§9, §9.6). 기본 빌드가 이제 A 경로를 쓴다 (`configDMA_MEDIATOR_SVC`) |
 
 ## 1. 정적 비교 (빌드에서 확인한 사실)
 
@@ -408,6 +408,49 @@ V0 는 이제 A 경로 Task 다 (context 없음, 매 회 SVC 경로 호출). V1 
   - Secure heap 을 Task 당 1040 B 아낀다.
   - 요청보다 전환이 훨씬 잦은 Task 일수록 차이가 커진다 [추정].
 - **Thread mode asm (§4) 은 요청 1 회로는 가장 싸다.** 하지만 §8 문제 때문에 context 없는 Task 에서는 쓸 수 없다. A 는 그 대가로 요청당 +46 ~ +103 을 낸다.
+
+### 9.6 P2 cache cold (SVC 경로) [실측, N=1000, 바깥 중앙값 cycle, `results/svc/P2_{110,32}M_cold_ts0`]
+
+§9.3 은 off/warm 만 쟀다. 이번에 P2 의 cold 두 조건만 추가했다 (다른 조건, 문맥 전환 표는 재지 않음).
+
+**방법.** §9.3 과 같은 빌드(`BENCH_PHASE=1 BENCH_DECOMP BENCH_ICACHE`)에 `BENCH_COLD` 를 더했다.
+- `bench_decomp_main` 의 반복 루프(NS_CALIB, `BENCH_LOOP_NSC`, `BENCH_LOOP_START`)에 `bench_before_iter()` 를 넣었다. 매 회 측정 직전에 `SECURE_bench_cold` (ICACHE 전체 무효화) 를 부른다. §4 의 cold 와 같은 정의다: NS 루프 코드는 다시 채워지고, 측정 구간의 SVC_Handler, NS veneer, SG, Secure 코드는 cold 다 [코드].
+- bench Task A 는 BENCH_PHASE 에서 Secure context 가 있으므로 C NSC `SECURE_bench_cold` 를 부를 수 있다 (§5 의 helper Task 문제 없음) [코드].
+- cold 빌드에서는 문맥 전환 표(`bench_cx_*`)를 빼서 만든다. 전환 표에는 `bench_before_iter` 가 없어 cold 가 아니기 때문이다.
+- cold 가 아닌 빌드에는 영향 없음: `bench_before_iter` 는 빈 inline 이다. P2/110/warm 을 다시 빌드해 §9.3 ELF 와 적재 내용·심볼이 같음을 확인했다 (`loadcmp.sh` same) [실측].
+- env.txt: 110 MHz FLASH_ACR 5, 32 MHz FLASH_ACR 1, ICACHE_CR 1 [실측].
+
+**결과 (같은 빌드 안, NS 판독 보정 뺌).**
+
+| 프로파일 | 클럭 | 캐시 | C (Thread) | asm (Thread) | **SVC 경로 (A)** | 빈 SVC | SVC − 빈 SVC | A / C | SVC min / avg / max |
+|---|---|---|---|---|---|---|---|---|---|
+| P2 | 110 | warm (§9.3) | 173 | 57 | **160** | 34 | 126 | 92 % | 160 / 160.6 / 370 |
+| P2 | 110 | **cold** | 291 | 162 | **275** | 66 | 209 | 95 % | 275 / 278.0 / 747 |
+| P2 | 32 | warm (§9.3) | 125 | 57 | **118** | 34 | 84 | 94 % | 118 / 119.0 / 298 |
+| P2 | 32 | **cold** | 158 | 81 | **145** | 40 | 105 | 92 % | 145 / 146.4 / 377 |
+
+중앙값 값이 1000 표본 중 993 (110 MHz), 994 (32 MHz) 개로, 값이 거의 고정이다 [실측].
+
+**테이블 방식과 비교 (`cmpTable.md` §3.4.3, P2, 중재자 바깥 중앙값).**
+
+| 클럭 | 캐시 | S-MPU A (SVC, 이번) | S-MPU C (`results/table`) | 테이블 최선 (항목 0) | 테이블 최악 (항목 7) | 최선 − A | 최악 − A |
+|---|---|---|---|---|---|---|---|
+| 110 | warm | 160 | 109 | 151 | 241 | −9 | +81 |
+| 110 | **cold** | **275** | 305 | 360 | 449 | **+85** | **+174** |
+| 32 | warm | 118 | 109 | 135 | 209 | +17 | +91 |
+| 32 | **cold** | **145** | 164 | 190 | 263 | **+45** | **+118** |
+
+- **cold 에서는 A 가 테이블 최선보다도 빠르다.** 110 MHz 275 vs 360 (−24 %), 32 MHz 145 vs 190 (−24 %). warm 110 MHz 에서만 테이블 최선(151)이 A(160)보다 9 빨랐다.
+- **warm 과 cold 의 차이 (cold − warm).** A: 110 MHz +115, 32 MHz +27. 테이블 최선: +209, +55. 테이블 최악: +208, +54.
+  테이블 방식은 C NSC 경로(프롤로그, FP 정리, 컴파일러 코드)에 테이블 순회 코드까지 더해 cold 에서 채워야 할 코드가 많다.
+  A 는 SVC_Handler fast path + 33 명령 naked 본문이라 채울 줄이 적다 [추정: miss 수는 재지 않음].
+- **110 MHz 에서 cold 비용이 크다.** Flash wait state 5 (32 MHz 는 1) 라서 miss 1 회가 비싸다. §4.1 과 같은 해석이다 [실측 값 + 추정 원인].
+- **SVC 자체도 cold 영향을 받는다.** 빈 SVC 34 → 66 (110 MHz), 34 → 40 (32 MHz). SVC_Handler 첫 줄들의 miss 로 보인다 [추정].
+
+**비교 조건 주의.**
+- 테이블 수치는 다른 빌드(`results/table`, `results/table_best`: BENCH_DECOMP 없음, C NSC)에서 쟀다. NS 배치가 달라 수 cycle ~ 수십 cycle 차이가 날 수 있다. 같은 빌드 비교는 C 열(S-MPU C 중재자)로 하면 된다: 110/cold C 291 (이번) vs 305 (`results/table`), 차이 14.
+- bench Task A 는 FPCA = 1 이라 SVC 진입이 FP 확장 프레임이다 (§9.3 주의와 같음). 실제 A Task 는 FPCA = 0 이라 조금 더 쌀 것이다 [추정].
+- warm 110 MHz 의 A(160) 는 SVC_Handler 의 ICACHE 충돌 의심이 있다 (§9.3, 미확인). cold 는 매 회 전부 비우므로 이 충돌의 영향을 받지 않는다 [아키텍처 도출].
 
 ## 10. 요약: SVC 없이 생긴 문제, SVC 로 해결되는 이유, 추가 오버헤드
 

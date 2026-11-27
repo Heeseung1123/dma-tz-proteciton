@@ -297,6 +297,7 @@ static inline void bench_svc_empty(void) { __asm volatile ("svc %0" :: "i"(portS
  *   PSP_S = 0 에 프레임이 쌓여 멈췄다 [실측: PSP_S 0xFFFFFFE0, EXC_RETURN 0xFFFFFFFD, cmpAsmMediator.md §7]. 
  *   mode 2: context 있음, C 빈 NSC (SECURE_nop3: vmov 로 FPCA = 1) -> C 중재자 Task 와 같은 상태
  * 처음 4 표본(Task 첫 시작 포함)은 버린다 (예전 f262d8d^ 하니스와 같음). */
+#ifndef BENCH_COLD
 typedef struct { volatile uint32_t valid, i, n, t0, done; } bench_cx_t;
 static bench_cx_t s_cx;
 static void bench_cx_task(void *p)
@@ -338,16 +339,18 @@ static void bench_cx_run(uint32_t id, uint32_t mode)
     vTaskDelete(h0); vTaskDelete(h1);
     vTaskDelay(5);       /* IDLE 이 TCB 와 Secure context 를 해제 */
 }
+#endif /* !BENCH_COLD */
 
 #define BENCH_LOOP_NSC(id, call) do {                                   \
         (void)(call);                                                    \
         for (i = 0; i < BENCH_N; i++)                                    \
-        { BENCH_MEASURE_NS(a, (void)(call)); BENCH_ROW(i)[0] = a; }      \
+        { bench_before_iter();                                           \
+          BENCH_MEASURE_NS(a, (void)(call)); BENCH_ROW(i)[0] = a; }      \
         bench_table_done(id); } while (0)
 #define BENCH_LOOP_START(id, fn) do {                                   \
         fn(dst, g, &a);                                                  \
         for (i = 0; i < BENCH_N; i++)                                    \
-        { fn(dst, g, &a); BENCH_ROW(i)[0] = a; }                         \
+        { bench_before_iter(); fn(dst, g, &a); BENCH_ROW(i)[0] = a; }    \
         bench_table_done(id); } while (0)
 
 static void bench_decomp_main(void)
@@ -356,7 +359,7 @@ static void bench_decomp_main(void)
     uint8_t *dst = s_dmaTaskMem[DMA_TASK_A].cluster.dst;
     uint32_t i, a;
 
-    for (i = 0; i < BENCH_N; i++) { BENCH_MEASURE_NS(a, ;); BENCH_ROW(i)[0] = a; }
+    for (i = 0; i < BENCH_N; i++) { bench_before_iter(); BENCH_MEASURE_NS(a, ;); BENCH_ROW(i)[0] = a; }
     bench_table_done(BENCH_ID_NS_CALIB);
 
     BENCH_LOOP_NSC(BENCH_ID_EMPTY_NSC,  SECURE_nop3(NULL, NULL, 0));
@@ -371,9 +374,11 @@ static void bench_decomp_main(void)
     BENCH_LOOP_NSC(BENCH_ID_SVC_EMPTY,  (bench_svc_empty(), 0));
 #endif
 
+#ifndef BENCH_COLD   /* cold 빌드는 요청 1 회 표만 잰다 (전환 표는 bench_before_iter 가 없어 cold 가 아님) */
     bench_cx_run(BENCH_ID_CTX_V0, 0u);
     bench_cx_run(BENCH_ID_CTX_V1, 1u);
     bench_cx_run(BENCH_ID_CTX_V2, 2u);
+#endif
 
     bench_table_done(BENCH_ID_END);
     for (;;) { vTaskDelay(pdMS_TO_TICKS(1000)); }

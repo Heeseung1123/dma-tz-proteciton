@@ -11,13 +11,13 @@ def s32(x): return x - 2**32 if x >= 2**31 else x
 def pairmed(x):
     x = [s32(y) for y in x]
     return st.median([(x[i] + x[i + 1]) / 2 for i in range(0, len(x) - 1, 2)])
-conds = [(p, c, k) for p in ['P1', 'P2'] for c in ['110', '32'] for k in ['off', 'warm']]
+conds = [(p, c, k) for p in ['P1', 'P2'] for c in ['110', '32'] for k in ['off', 'warm', 'cold']]
 print('| 프로파일 | 클럭 | 캐시 | C (Thread) | asm (Thread, §8 문제) | **SVC 경로 (A)** | 빈 SVC | SVC − asm | SVC − 빈 SVC (Handler mode 중재자) | asm − 빈 asm NSC (Thread mode 중재자) | A / C | SVC 최대 |')
 print('|' + '---|' * 12)
 rows = []
 for p, c, k in conds:
     v = f'{p}_{c}M_{k}_ts0'
-    if not os.path.exists(f'{R}/{v}/svc_empty.csv'): print(f'| {p} | {c} | {k} | 미측정 |'); continue
+    if not os.path.exists(f'{R}/{v}/svc_empty.csv'): continue
     n = min(col(v, 'ns_calib'))
     m = {f: st.median(col(v, f)) - n for f in ['start_total', 'start_asm_total', 'start_svc', 'svc_empty', 'nsc_asm0']}
     mx = max(col(v, 'start_svc')) - n
