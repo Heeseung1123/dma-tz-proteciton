@@ -144,10 +144,16 @@ static Config loadConfig() {
 //===----------------------------------------------------------------------===//
 // 유틸
 //===----------------------------------------------------------------------===//
+// "file:line" + 인라인된 경우 호출 위치 체인 (" <- file:line ...").
+// LTO 전 단계(per-TU -O2)에서 래퍼가 인라인되면 안쪽 위치만으로는 어느 태스크 코드인지 알 수 없다.
 static std::string locOf(const Instruction &I) {
-  if (const DILocation *L = I.getDebugLoc())
-    return (L->getFilename() + ":" + Twine(L->getLine())).str();
-  return "?";
+  const DILocation *L = I.getDebugLoc();
+  if (!L)
+    return "?";
+  std::string R = (L->getFilename() + ":" + Twine(L->getLine())).str();
+  for (const DILocation *IA = L->getInlinedAt(); IA; IA = IA->getInlinedAt())
+    R += (" <- " + IA->getFilename().rsplit('/').second + ":" + Twine(IA->getLine())).str();
+  return R;
 }
 
 static Function *asFunction(Value *V) {
@@ -524,6 +530,35 @@ struct DmaClusterPass : PassInfoMixin<DmaClusterPass> {
 
     // 4) annotate 우선
     readAnnotations(S);
+    // unresolved-load 는 "annotate 로 보완" 이 문서화된 해법이다. 그 태스크(또는 공유) 에 annotate 된
+    // DMA 버퍼가 하나라도 있으면 개발자가 보완한 것으로 보고 warning 으로 낮춘다.
+    // (안전성: 놓친 버퍼로의 DMA 는 런타임에 TTT/TTAT 가 거부 = fail-closed. 기능 문제일 뿐 보호 우회 아님)
+    {
+      std::set<std::string> AnnTasks;
+      bool AnnShared = false;
+      for (auto &[G, B] : S.Bufs)
+        if (!B.Forced.empty()) {
+          if (StringRef(B.Forced).starts_with("shared:"))
+            AnnShared = true;
+          else
+            AnnTasks.insert(B.Forced);
+        }
+      for (json::Value &V : S.Diags) {
+        json::Object *O = V.getAsObject();
+        if (O->getString("kind").value_or("") != "unresolved-load" ||
+            O->getString("severity").value_or("") != "error")
+          continue;
+        std::string T = O->getString("task").value_or("").str();
+        if (AnnTasks.count(T) || AnnShared) {
+          (*O)["severity"] = "warning";
+          (*O)["msg"] = (O->getString("msg").value_or("") +
+                         " [annotate(\"dma:...\") 버퍼가 있어 warning 으로 낮춤]").str();
+          --S.Errors;
+          errs() << "[dma-cluster] (위 unresolved-load, " << T
+                 << ") annotate 버퍼가 있어 warning 으로 낮춤\n";
+        }
+      }
+    }
     for (auto &[G, B] : S.Bufs) {
       if (B.Forced.empty())
         continue;

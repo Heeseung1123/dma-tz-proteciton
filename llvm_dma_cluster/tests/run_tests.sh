@@ -29,6 +29,10 @@ print(" ".join(f"{s:#x} {e:#x} {g}" for _i, _k, s, e, g in (struct.unpack_from("
 EOF
 }
 
+echo "== T0 pass 단위 시험 (opt)"
+if bash "$TOOLS/tests/pass/run.sh" > "$B/t_pass.log" 2>&1; then ok "pass 단위: $(grep -c '^ok' "$B/t_pass.log") 항목"
+else bad "pass 단위 (build/t_pass.log)"; grep FAIL "$B/t_pass.log"; fi
+
 echo "== T1 guard 결합 변형: --include-possible 로 Secure 데이터를 guard 에 배치한 전체 빌드"
 if OUT_ROOT=$B/t_bind PACK_ARGS=--include-possible bash "$TOOLS/scripts/build_all.sh" > "$B/t_bind.log" 2>&1; then
   ok "t_bind: 전체 빌드 + veneer 동일 + check_pair 0"
@@ -55,6 +59,9 @@ must_fail bad_init  "-DDMA_TEST_BAD_INIT"  "annotated-unplaceable.*초기값"
 must_fail bad_task  "-DDMA_TEST_BAD_TASK"  "annotated-unplaceable.*vNoSuchTask"
 must_fail stack_buf "-DDMA_TEST_STACK_BUF" "stack-buffer"
 must_fail too_many  "-DDMA_TEST_TOO_MANY"  "S-MPU 태그 가능 수"
+if REGION_USERS=- ns_build stale_regions ""; then bad "stale_regions: dma_regions.h 미반영인데 성공"
+elif grep -q "NS-MPU region .* 0 개" "$B/t_stale_regions/ns.log"; then ok "stale_regions: check_layout 이 xRegions 미반영을 잡음"
+else bad "stale_regions: 기대 진단 없음"; fi
 must_fail oversize  "-DDMA_TEST_OVERSIZE"  "will not fit in region|overflow"
 
 echo "== T4 annotate 양성"

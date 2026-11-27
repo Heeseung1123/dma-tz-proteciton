@@ -53,6 +53,21 @@ def main() -> int:
             if e <= a < g and not name.startswith("__dmac"):
                 bad.append(f"guard c{i} 안에 심볼 {name} @ {a:#x}")
 
+    # 태스크 NS-MPU region (dma_regions.h → TaskParameters_t.xRegions) 이 실제 이미지에 들어갔는지:
+    # {cluster start, cap} 쌍이 읽기 전용 데이터에 owner 수만큼 있어야 한다 (dma_regions.h 를 쓰는 파일을
+    # 재컴파일하지 않았거나 placeholder 가 남으면 0 개).
+    ro = b"".join(x.data() for x in elf.iter_sections()
+                  if x["sh_type"] == "SHT_PROGBITS" and (x["sh_flags"] & 2) and not (x["sh_flags"] & 1))
+    words = struct.unpack_from(f"<{len(ro) // 4}I", ro[: len(ro) // 4 * 4])
+    for i, c in enumerate(lay["clusters"]):
+        s = syms[f"__dmac{i}_start"][0]
+        cap = syms[f"__dmac{i}_end"][0] - s
+        n = sum(1 for k in range(len(words) - 1) if words[k] == s and words[k + 1] == cap)
+        if n != len(c["owners"]):
+            bad.append(f"c{i}: NS-MPU region {{{s:#x}, {cap:#x}}} 이 {n} 개 (owner {len(c['owners'])} 개 기대)")
+    waste = sum(syms[f"__dmac{i}_end"][0] - syms[f"__dmac{i}_fill"][0] for i in range(len(lay["clusters"])))
+    print(f"cluster 안 미사용 {waste} B (256 B 올림), guard {256 * len(lay['clusters'])} B")
+
     sec = elf.get_section_by_name(".dma_manifest")
     d = sec.data()
     magic, ver, cnt = struct.unpack_from("<III", d, 0)

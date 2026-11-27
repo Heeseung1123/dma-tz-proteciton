@@ -136,6 +136,10 @@ def main() -> int:
     (out / "dma_regions.h").write_text("\n".join(hdr))
 
     shutil.copyfile(a.layout, out / "layout_final.json")
+    for i, c in enumerate(clusters):
+        cap = align_up(max(int(c["bytes_bound"]), 1), 256)
+        print(f"[gen] c{i} {c['id']:20s} owners={','.join(c['owners']):24s} "
+              f"bound {c['bytes_bound']:5d} B → cap {cap:5d} B (+guard 256)", file=sys.stderr)
     print(f"[gen] cluster {len(clusters)} 개 생성 → {out}")
     return 0
 

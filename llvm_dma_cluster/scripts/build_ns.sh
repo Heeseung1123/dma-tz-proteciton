@@ -129,6 +129,7 @@ python3 "$TOOLS/gen/gen_layout.py" --layout "$OUT/dma_layout.pass1.json" --out-d
 
 echo "== 4) dma_regions.h 사용 파일 재컴파일 + manifest"
 for r in $REGION_USERS; do
+  [ "$r" = "-" ] && continue             # 시험용: 재컴파일 생략 (check_layout 이 잡아야 함)
   "$LLVM/clang" $CFLAGS -DDMA_HAVE_REGIONS -I"$OUT/gen" -c "$(ov "$r")" -o "$(obj "$r")"
 done
 "$LLVM/clang" $CFLAGS -c "$OUT/gen/dma_manifest.c" -o "$OUT/obj/dma_manifest.o"
