@@ -89,6 +89,8 @@ static Config loadConfig() {
         if (auto S = V.getAsString())
           Dst.insert(S->str());
   };
+  if (const char *Ov = std::getenv("SECURE_GUARD_OUT"))
+    C.Out = Ov;
   readSet("post_boot_handlers", C.PostBootHandlers);
   readSet("exclude", C.Exclude);
   return C;

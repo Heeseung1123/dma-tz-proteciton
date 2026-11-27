@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# run_tests.sh — 5단계 음성/양성 빌드 시험 (보드 없이). 본 빌드(build/)는 건드리지 않고 build/t_* 에 만든다.
+#   전제: scripts/build_all.sh 가 한 번 성공 (build/pass, build/secure0)
+set -uo pipefail
+TOOLS=$(cd "$(dirname "$0")/.." && pwd)
+source "$TOOLS/scripts/env_llvm18.sh"; export LLVM LLVM_DIR
+B=$TOOLS/build
+export IMPLIB=$B/secure0/secure_nsclib.o
+PASS=0; FAILN=0
+ok()   { echo "PASS  $1"; PASS=$((PASS+1)); }
+bad()  { echo "FAIL  $1"; FAILN=$((FAILN+1)); }
+
+ns_build() {   # $1 = 이름, $2 = 추가 -D → 0/1, 로그 build/t_$1/ns.log
+  mkdir -p "$B/t_$1"
+  OUT="$B/t_$1/ns" EXTRA_DEFS="-DDMA_ATTACK_TESTS $2" bash "$TOOLS/scripts/build_ns.sh" > "$B/t_$1/ns.log" 2>&1
+}
+must_fail() {  # $1 이름, $2 -D, $3 로그에 있어야 할 문자열(grep -E)
+  if ns_build "$1" "$2"; then bad "$1: 빌드가 성공함 (실패해야 함)"
+  elif grep -qE "$3" "$B/t_$1/ns.log"; then ok "$1: 빌드 실패, 진단 /$3/"
+  else bad "$1: 실패했지만 기대 진단 /$3/ 없음 (build/t_$1/ns.log)"; fi
+}
+manifest_args() {  # ns.elf → "start end gb ..." (host_guard_bind 인자)
+  python3 - "$1" <<'EOF'
+import struct, sys
+from elftools.elf.elffile import ELFFile
+d = ELFFile(open(sys.argv[1], "rb")).get_section_by_name(".dma_manifest").data()
+n = struct.unpack_from("<I", d, 8)[0]
+print(" ".join(f"{s:#x} {e:#x} {g}" for _i, _k, s, e, g in (struct.unpack_from("<IIIII", d, 12 + 20 * i) for i in range(n))))
+EOF
+}
+
+echo "== T1 guard 결합 변형: --include-possible 로 Secure 데이터를 guard 에 배치한 전체 빌드"
+if OUT_ROOT=$B/t_bind PACK_ARGS=--include-possible bash "$TOOLS/scripts/build_all.sh" > "$B/t_bind.log" 2>&1; then
+  ok "t_bind: 전체 빌드 + veneer 동일 + check_pair 0"
+  grep -A12 '^guard 블록' "$B/t_bind.log" | sed 's/^/      /'
+else bad "t_bind: 전체 빌드 실패 (build/t_bind.log)"; fi
+
+echo "== T2 stale NS 이미지: NS 만 배치를 바꿔 다시 빌드 → Secure(t_bind) 와 짝이 안 맞음 → -7"
+if ns_build stale "-DDMA_TEST_SHIFT"; then
+  python3 "$TOOLS/scripts/check_pair.py" "$B/t_bind/secure/secure.elf" "$B/t_stale/ns/ns.elf" --expect -7 \
+    && ok "stale: check_pair 예상 -7" || bad "stale: check_pair 가 -7 을 예상하지 않음"
+  HB=$B/host_guard_bind_tbind
+  gcc -O0 -Wall -Wno-pointer-to-int-cast -Wno-int-to-pointer-cast -I"$TOOLS/common" -I"$B/t_bind/secure/gen" "$TOOLS/tests/host_guard_bind.c" \
+      "$TOOLS/secure/secure_guard_bind.c" -o "$HB" || bad "host_guard_bind 컴파일 실패"
+  # shellcheck disable=SC2046
+  if "$HB" $(manifest_args "$B/t_bind/ns/ns.elf"); then ok "host: 짝이 맞는 manifest → guard_bind_init 0"
+  else bad "host: 짝이 맞는 manifest 인데 실패"; fi
+  # shellcheck disable=SC2046
+  if "$HB" $(manifest_args "$B/t_stale/ns/ns.elf"); then bad "host: stale manifest 인데 guard_bind_init 이 0"
+  else ok "host: stale manifest → guard_bind_init -1 (dma_boot_config → -7, Error_Handler)"; fi
+else bad "stale: NS 빌드 실패 (build/t_stale/ns.log)"; fi
+
+echo "== T3 배치할 수 없는 버퍼는 빌드 실패"
+must_fail bad_init  "-DDMA_TEST_BAD_INIT"  "annotated-unplaceable.*초기값"
+must_fail bad_task  "-DDMA_TEST_BAD_TASK"  "annotated-unplaceable.*vNoSuchTask"
+must_fail stack_buf "-DDMA_TEST_STACK_BUF" "stack-buffer"
+must_fail too_many  "-DDMA_TEST_TOO_MANY"  "S-MPU 태그 가능 수"
+must_fail oversize  "-DDMA_TEST_OVERSIZE"  "will not fit in region|overflow"
+
+echo "== T4 annotate 양성"
+if ns_build annotate_ok "-DDMA_TEST_ANNOTATE_OK"; then
+  python3 - "$B/t_annotate_ok/ns/gen/layout_final.json" <<'EOF' && ok "annotate_ok: s_testAnnB → t.vDmaTaskB" || bad "annotate_ok: 배치 틀림"
+import json, sys
+L = json.load(open(sys.argv[1]))
+c = {x["id"]: x for x in L["clusters"]}["t.vDmaTaskB"]
+assert any(b["name"] == "s_testAnnB" for b in c["buffers"]) and c["owners"] == ["vDmaTaskB"]
+EOF
+else bad "annotate_ok: 빌드 실패"; fi
+if ns_build override "-DDMA_TEST_OVERRIDE"; then
+  python3 - "$B/t_override/ns/gen/layout_final.json" <<'EOF' && ok "override: owner = vDmaTaskB 만 + annotate-override 경고" || bad "override: owner 오염"
+import json, sys
+L = json.load(open(sys.argv[1]))
+c = {x["id"]: x for x in L["clusters"]}["t.vDmaTaskB"]
+assert any(b["name"] == "s_testOvr" for b in c["buffers"]) and c["owners"] == ["vDmaTaskB"], c
+assert any(d["kind"] == "annotate-override" for d in L["diagnostics"])
+EOF
+else bad "override: 빌드 실패"; fi
+
+echo "== 결과: PASS $PASS / FAIL $FAILN"
+[ "$FAILN" -eq 0 ]

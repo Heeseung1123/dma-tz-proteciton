@@ -40,8 +40,8 @@ done
 "$LLVM/llvm-link" "${BCS[@]}" -o "$S_OUT/secure.bc"        # 파일들을 하나의 IR 모듈로
 
 export SECURE_GUARD_CONFIG=${SECURE_GUARD_CONFIG:-$TOOLS/config/secure_guard_config.json}
-CAND=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['out'])" "$SECURE_GUARD_CONFIG")
-case "$CAND" in /*) ;; *) CAND="$TOOLS/$CAND";; esac
+export SECURE_GUARD_OUT=${SECURE_GUARD_OUT:-$S_OUT/secure_guard_candidates.json}
+CAND=$SECURE_GUARD_OUT
 mkdir -p "$(dirname "$CAND")"; rm -f "$CAND"
 "$LLVM/opt" -load-pass-plugin="$PLUGIN" -passes=secure-guard-select -disable-output "$S_OUT/secure.bc"
 [ -f "$CAND" ] || { echo "pass 가 $CAND 를 쓰지 않음"; exit 1; }

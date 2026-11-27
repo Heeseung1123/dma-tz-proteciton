@@ -50,3 +50,14 @@
 - 배치(③): guard 2 개(pad 제외: 0x30018300, 0x30018500), 사용 0.
 - Secure 최종(④): GCC 14.3, CubeIDE 와 같은 플래그(-O0), `--in-implib=⓪`. text 12808 / data 48 / bss 11992.
 - veneer(⑤): ⓪(= baseline `Secure/Debug/secure_nsclib.o`, baseline 오브젝트를 새로 링크한 것과 byte 동일) 과 16 개 심볼·주소 동일.
+| 20 | 2/3 | 설정의 `"out"` 경로가 고정 → 시험 변형 빌드가 본 빌드의 layout/candidates 를 덮어씀 | pass 에 `DMA_CLUSTER_OUT` / `SECURE_GUARD_OUT` 환경 변수 (빌드 스크립트가 출력 디렉터리 기준으로 설정) | |
+| 21 | 5 | `k_guard_bind_ns[]`(1 원소 static const)를 GCC -O0 가 심볼 없이 상수 접기 → ELF 로 기대 guard 를 읽을 수 없음 | `check_pair.py` 는 secure.elf 의 `.gbind<k>` 출력 섹션 주소(= Secure 데이터 실제 위치)를 기준으로 | stale 짝 -7 예상 |
+
+### 5단계 결과 (보드 없이) — `tests/run_tests.sh` PASS 11 / FAIL 0
+- 추가 도구: `scripts/build_all.sh` (1–3단계 전체), `scripts/check_pair.py` (secure.elf + ns.elf → `dma_boot_config()` 예상 반환값),
+  `tests/host_guard_bind.c` (실제 `secure_guard_bind.c` 를 호스트에서 실행).
+- T1 guard 결합 변형(`PACK_ARGS=--include-possible`): 7 개 32 B 가 Task A guard(0x30018300)로, veneer 동일, check_pair 0.
+- T2 stale NS(`-DDMA_TEST_SHIFT`: Task A cluster 512 B → 뒤 guard 이동): check_pair -7, 호스트 실행 `guard_bind_init` = -1 (→ `dma_boot_config` -7 → `Error_Handler`),
+  짝이 맞는 manifest 로는 0.
+- T3 빌드 실패해야 하는 것: 초기값 있는 annotate 버퍼, 없는 태스크 이름, 스택 버퍼, cluster 7 개(> 태그 4), 128 KB cluster(lld region 초과) — 모두 실패 + 기대 진단.
+- T4 annotate 양성: sink 사용처 없는 annotate 버퍼 배치, Task A 가 쓰는 B-annotate 버퍼 → owner = B 만 + `annotate-override` 경고.

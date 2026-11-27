@@ -85,8 +85,8 @@ cd "$TOOLS"                    # pass 는 설정의 "out" 경로를 lld 의 현�
 rm -rf "$OUT/gen" "$OUT/obj"; mkdir -p "$OUT/obj" "$OUT/gen"
 export DMA_CLUSTER_CONFIG=${DMA_CLUSTER_CONFIG:-$TOOLS/config/dma_config.json}
 export DMA_CLUSTER_STRICT=1
-LAYOUT=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['out'])" "$DMA_CLUSTER_CONFIG")
-case "$LAYOUT" in /*) ;; *) LAYOUT="$TOOLS/$LAYOUT";; esac
+export DMA_CLUSTER_OUT=${DMA_CLUSTER_OUT:-$OUT/dma_layout.json}   # 설정의 "out" 보다 우선
+LAYOUT=$DMA_CLUSTER_OUT
 mkdir -p "$(dirname "$LAYOUT")"
 rm -f "$LAYOUT"
 

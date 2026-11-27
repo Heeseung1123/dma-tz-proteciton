@@ -133,6 +133,8 @@ static Config loadConfig() {
         if (!K.Func.empty() && !K.Args.empty())
           C.Sinks.push_back(std::move(K));
       }
+  if (const char *O = std::getenv("DMA_CLUSTER_OUT")) // 빌드별 출력 경로 (시험 변형이 본 빌드를 덮지 않게)
+    C.Out = O;
   C.Ok = !C.Sinks.empty();
   if (!C.Ok)
     errs() << "[dma-cluster] sink 목록이 비어 있음: pass 비활성\n";

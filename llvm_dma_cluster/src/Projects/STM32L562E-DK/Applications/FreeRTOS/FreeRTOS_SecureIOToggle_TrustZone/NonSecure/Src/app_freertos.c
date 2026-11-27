@@ -114,6 +114,32 @@ static uint8_t s_dmaDstA[256];        /* Task A 만 → .dma.t.vDmaTaskA */
 static uint8_t s_dmaDstB[256];        /* Task B 만 → .dma.t.vDmaTaskB */
 static uint8_t s_dmaShared[64];       /* A, B 둘 다 → 공유 cluster .dma.s.0 */
 
+/* ---- 빌드 시험용 변형 (tests/run_tests.sh 가 -D 로 켠다. 기본 빌드에는 없음) ---- */
+#if defined(DMA_TEST_SHIFT)        /* 음성: NS 배치만 바뀐 "stale" 이미지 → Secure 의 guard 결합 불일치 (-7) */
+static uint8_t s_testShift[256] __attribute__((used, annotate("dma:vDmaTaskA")));
+#endif
+#if defined(DMA_TEST_BAD_INIT)     /* 음성: 초기값 있는 annotate 버퍼 → NOLOAD cluster 에 둘 수 없음 */
+static uint8_t s_testBadInit[16] __attribute__((used, annotate("dma:vDmaTaskA"))) = { 1 };
+#endif
+#if defined(DMA_TEST_BAD_TASK)     /* 음성: annotate 의 태스크 이름이 없음 */
+static uint8_t s_testBadTask[16] __attribute__((used, annotate("dma:vNoSuchTask")));
+#endif
+#if defined(DMA_TEST_TOO_MANY)     /* 음성: cluster 7 개 > S-MPU 태그 4 개 */
+static uint8_t s_testMany1[8] __attribute__((used, annotate("dma:shared:m1")));
+static uint8_t s_testMany2[8] __attribute__((used, annotate("dma:shared:m2")));
+static uint8_t s_testMany3[8] __attribute__((used, annotate("dma:shared:m3")));
+static uint8_t s_testMany4[8] __attribute__((used, annotate("dma:shared:m4")));
+#endif
+#if defined(DMA_TEST_OVERSIZE)     /* 음성: NS RAM(96K) 에 들어가지 않는 cluster → 링크 실패 */
+static uint8_t s_testHuge[128 * 1024] __attribute__((used, annotate("dma:vDmaTaskA")));
+#endif
+#if defined(DMA_TEST_ANNOTATE_OK)  /* 양성: sink 사용처 없이 annotate 만으로 Task B cluster 에 */
+static uint8_t s_testAnnB[48] __attribute__((used, annotate("dma:vDmaTaskB")));
+#endif
+#if defined(DMA_TEST_OVERRIDE)     /* 양성: Task A 가 쓰지만 annotate 는 Task B → owner = B 만 (경고) */
+static uint8_t s_testOvr[32] __attribute__((annotate("dma:vDmaTaskB")));
+#endif
+
 #define DMA_NSMPU_REGIONS(t)  (1 + DMA_TASK_NREGIONS_##t)
 _Static_assert(DMA_NSMPU_REGIONS(vDmaTaskA) <= portNUM_CONFIGURABLE_REGIONS, "Task A NS-MPU regions");
 _Static_assert(DMA_NSMPU_REGIONS(vDmaTaskB) <= portNUM_CONFIGURABLE_REGIONS, "Task B NS-MPU regions");
@@ -201,6 +227,9 @@ static void vDmaTaskA( void *pvParameters )
     {
       (void)App_DmaM2M(&p->v, p->src, s_dmaShared, DMA_XFER_LEN);
     }
+#if defined(DMA_TEST_OVERRIDE)
+    (void)App_DmaM2M(&p->v, p->src, s_testOvr, DMA_XFER_LEN);
+#endif
     xSemaphoreGive(p->v.dmaMutex);
 
     vTaskDelay(pdMS_TO_TICKS(500));
@@ -221,6 +250,13 @@ static void vDmaTaskB( void *pvParameters )
     {
       (void)App_DmaM2M(&p->v, p->src, s_dmaShared + 32, DMA_XFER_LEN);
     }
+#if defined(DMA_TEST_STACK_BUF)    /* 음성: 지역(스택) 배열을 DMA 목적지로 */
+    {
+      uint8_t local[8];
+      (void)App_DmaM2M(&p->v, p->src, local, sizeof(local));
+      p->okCount += local[0];
+    }
+#endif
     xSemaphoreGive(p->v.dmaMutex);
 
     vTaskDelay(pdMS_TO_TICKS(700));
