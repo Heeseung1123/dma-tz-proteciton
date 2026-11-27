@@ -36,7 +36,7 @@
 ENTRY(Reset_Handler)
 
 /* Highest address of the user mode stack */
-_estack = ORIGIN(RAM) + LENGTH(RAM);	/* end of "RAM" Ram type memory */
+/* llvm_dma_cluster: _estack 은 MEMORY 뒤로 이동 (lld 는 MEMORY 정의 전 ORIGIN() 참조를 거부) */
 
 _Min_Heap_Size = 0x200 ;	/* required amount of heap  */
 _Min_Stack_Size = 0x400 ;	/* required amount of stack */
@@ -48,6 +48,8 @@ MEMORY
   ROM	(rx)	: ORIGIN = 0x8040000,	LENGTH = 256K    /* Memory is divided. Actual start is 0x8000000 and actual length is 512K */
 }
 
+_estack = ORIGIN(RAM) + LENGTH(RAM);	/* end of "RAM" Ram type memory */
+
 /* Sections */
 SECTIONS
 {
@@ -58,6 +60,14 @@ SECTIONS
     KEEP(*(.isr_vector)) /* Startup code */
     . = ALIGN(8);
   } >ROM
+
+  /* llvm_dma_cluster: Secure boot 가 읽는 manifest. 고정 주소 = dma_manifest.h DMA_MANIFEST_NS_ADDR */
+  .dma_manifest 0x08040400 :
+  {
+    KEEP(*(.dma_manifest))
+  } >ROM
+  ASSERT(ADDR(.dma_manifest) == 0x08040400, "manifest address moved")
+  ASSERT(SIZEOF(.dma_manifest) > 0, "no .dma_manifest input")
 
   /* FreeRTOS-MPU, Kernel Code region for MPU Region 0 */
   .privileged_functions : ALIGN(32)
@@ -150,6 +160,10 @@ SECTIONS
     PROVIDE_HIDDEN (__fini_array_end = .);
     . = ALIGN(8);
   } >ROM
+
+  /* llvm_dma_cluster: DMA cluster + guard + zero table (생성물, -L build/ns/gen).
+   * .data/.bss 규칙보다 앞 → .dma.* 가 .bss* 에 먼저 잡히지 않게 (first match) */
+  INCLUDE dma_clusters.ld
 
   /* Used by the startup to initialize data */
    _sidata = LOADADDR(.data);

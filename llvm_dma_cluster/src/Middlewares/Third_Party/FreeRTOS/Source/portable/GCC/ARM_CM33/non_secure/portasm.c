@@ -135,6 +135,7 @@
             "    mov r0, #0                                   \n"
             "    msr basepri, r0                              \n" /* Ensure that interrupts are enabled when the first task starts. */
             "    bx lr                                        \n"
+            " .ltorg                                    \n" /* llvm_dma_cluster: clang 은 inline asm literal pool 을 모듈 끝에 둠 → 함수 안에 둔다 */
         );
     }
 
@@ -172,6 +173,7 @@
             "   mov  r0, #0                                     \n"
             "   msr  basepri, r0                                \n" /* Ensure that interrupts are enabled when the first task starts. */
             "   bx   r3                                         \n" /* Finally, branch to EXC_RETURN. */
+            " .ltorg                                    \n" /* llvm_dma_cluster: clang 은 inline asm literal pool 을 모듈 끝에 둠 → 함수 안에 둔다 */
         );
     }
 
@@ -241,6 +243,7 @@ void vStartFirstTask( void ) /* __attribute__ (( naked )) PRIVILEGED_FUNCTION */
         "   isb                                             \n"
         "   svc %0                                          \n" /* System call to start the first task. */
         "   nop                                             \n"
+        " .ltorg                                    \n" /* llvm_dma_cluster: clang 은 inline asm literal pool 을 모듈 끝에 둠 → 함수 안에 둔다 */
         ::"i" ( portSVC_START_SCHEDULER ) : "memory"
     );
 }
@@ -432,6 +435,7 @@ void vClearInterruptMask( __attribute__( ( unused ) ) uint32_t ulMask ) /* __att
             " restore_context_done:                           \n"
             "    str r2, [r1]                                 \n" /* Save the location where the context should be saved next as the first member of TCB. */
             "    bx lr                                        \n"
+            " .ltorg                                    \n" /* llvm_dma_cluster: clang 은 inline asm literal pool 을 모듈 끝에 둠 → 함수 안에 둔다 */
             ::"i" ( configMAX_SYSCALL_INTERRUPT_PRIORITY )
         );
     }
@@ -535,6 +539,7 @@ void vClearInterruptMask( __attribute__( ( unused ) ) uint32_t ulMask ) /* __att
             " restore_context_done:                           \n"
             "    msr psp, r2                                  \n" /* Remember the new top of stack for the task. */
             "    bx lr                                        \n"
+            " .ltorg                                    \n" /* llvm_dma_cluster: clang 은 inline asm literal pool 을 모듈 끝에 둠 → 함수 안에 둔다 */
             ::"i" ( configMAX_SYSCALL_INTERRUPT_PRIORITY )
         );
     }
@@ -616,6 +621,7 @@ void vClearInterruptMask( __attribute__( ( unused ) ) uint32_t ulMask ) /* __att
             "   mrsne r0, psp                                   \n"
             "   ldr r1, =vPortSVCHandler_C                      \n"
             "   bx r1                                           \n"
+            " .ltorg                                    \n" /* llvm_dma_cluster: clang 은 inline asm literal pool 을 모듈 끝에 둠 → 함수 안에 둔다 */
         );
     }
 

@@ -45,6 +45,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -69,6 +70,9 @@ struct Config {
       "xTaskCreateRestrictedStatic"};
   std::vector<std::string> HeapAllocators = {"pvPortMalloc", "malloc",
                                              "calloc"};
+  // 이 함수들 안의 sink 호출은 분석하지 않는다 (의도적으로 남의 버퍼를 넘기는 공격 시험 등).
+  // 인자 역추적도 이 함수들의 호출 위치로는 올라가지 않는다. 함수는 noinline 이어야 한다.
+  std::set<std::string> ExcludeCallers;
   std::string Out = "dma_layout.json";
   bool Ok = false;
 };
@@ -112,6 +116,10 @@ static Config loadConfig() {
       if (auto S = V.getAsString())
         C.HeapAllocators.push_back(S->str());
   }
+  if (const json::Array *A = O->getArray("exclude_callers"))
+    for (const json::Value &V : *A)
+      if (auto S = V.getAsString())
+        C.ExcludeCallers.insert(S->str());
   if (const json::Array *A = O->getArray("sinks"))
     for (const json::Value &V : *A)
       if (const json::Object *S = V.getAsObject()) {
@@ -304,7 +312,8 @@ static void trace(State &S, const Value *V, StringRef Task, const FnSet &R,
     bool Any = false;
     for (User *U : P->users())
       if (auto *CB = dyn_cast<CallBase>(U))
-        if (calleeOf(*CB) == P && R.count(CB->getFunction())) {
+        if (calleeOf(*CB) == P && R.count(CB->getFunction()) &&
+            !S.Cfg.ExcludeCallers.count(CB->getFunction()->getName().str())) {
           Any = true;
           trace(S, CB->getArgOperand(A->getArgNo()), Task, R, *CB, Depth + 1,
                 Visited);
@@ -401,14 +410,9 @@ struct DmaClusterPass : PassInfoMixin<DmaClusterPass> {
       return PreservedAnalyses::all();
     State S(Cfg, M);
 
-    // 간접 호출 대상 후보 (address-taken, 타입별)
-    std::map<FunctionType *, std::vector<Function *>> AddrTaken;
-    for (Function &F : M)
-      if (!F.isDeclaration() && F.hasAddressTaken())
-        AddrTaken[F.getFunctionType()].push_back(&F);
-
     // 1) 태스크 entry 수집
     std::map<std::string, Function *> Tasks; // 이름 → entry
+    SmallPtrSet<const CallBase *, 16> CreateCalls;
     for (Function &F : M)
       for (Instruction &I : instructions(F)) {
         auto *CB = dyn_cast<CallBase>(&I);
@@ -426,6 +430,11 @@ struct DmaClusterPass : PassInfoMixin<DmaClusterPass> {
           }
         if (!IsCreate || CB->arg_size() == 0)
           continue;
+        CreateCalls.insert(CB);
+        // MPU_xTaskCreate* 래퍼가 자기 인자를 그대로 넘기는 호출: 래퍼의 호출자에서 처리된다
+        if (auto *A = dyn_cast<Argument>(CB->getArgOperand(0)->stripPointerCasts()))
+          if (stripMpuPrefix(A->getParent()->getName()) == N)
+            continue;
         Function *E = IsRestricted ? entryFromParams(CB->getArgOperand(0))
                                    : asFunction(CB->getArgOperand(0));
         if (E)
@@ -435,11 +444,59 @@ struct DmaClusterPass : PassInfoMixin<DmaClusterPass> {
                  "태스크 entry 함수를 해석하지 못함 (함수 포인터 변수?)");
       }
 
+    // 간접 호출 대상 후보 (address-taken, 타입별).
+    // opaque pointer 에서는 void(ptr) 타입이 태스크 함수·타이머 콜백·HAL 콜백 등 모두 같으므로,
+    // 주소가 "태스크 생성 API 에 entry 로 넘겨지는 것" 에만 쓰이는 함수는 후보에서 뺀다
+    // (그렇지 않으면 타이머 태스크가 모든 DMA 태스크를 호출할 수 있다고 판정된다).
+    auto isCreateArg0 = [&](const User *U, const Value *V) {
+      auto *CB = dyn_cast<CallBase>(U);
+      return CB && CreateCalls.count(CB) && CB->arg_size() > 0 &&
+             CB->getArgOperand(0)->stripPointerCasts() == V;
+    };
+    std::function<bool(const Value *, unsigned)> onlyEntryUses =
+        [&](const Value *V, unsigned Depth) -> bool {
+      if (Depth > 8)
+        return false;
+      for (const User *U : V->users()) {
+        if (isCreateArg0(U, V))
+          continue;
+        if (auto *GV = dyn_cast<GlobalVariable>(U)) { // 초기값 안: GV 가 생성 API 에만 쓰여야 함
+          if (GV->getName() == "llvm.used" || GV->getName() == "llvm.compiler.used")
+            continue;
+          for (const User *W : GV->users())
+            if (!isCreateArg0(W, GV) &&
+                !(isa<Constant>(W) && onlyEntryUses(W, Depth + 1)))
+              return false;
+          continue;
+        }
+        if (isa<Constant>(U) && !isa<GlobalValue>(U)) { // ConstantStruct / ConstantExpr
+          if (!onlyEntryUses(U, Depth + 1))
+            return false;
+          continue;
+        }
+        if (auto *CB = dyn_cast<CallBase>(U); CB && CB->isCallee(&U->getOperandUse(0)))
+          continue; // 직접 호출
+        return false; // store, 다른 인자 등 → 주소가 흘러감
+      }
+      return true;
+    };
+    std::map<FunctionType *, std::vector<Function *>> AddrTaken;
+    for (Function &F : M) {
+      if (F.isDeclaration() || !F.hasAddressTaken())
+        continue;
+      bool IsEntry = false;
+      for (auto &[TN, E] : Tasks)
+        IsEntry |= (E == &F);
+      if (IsEntry && onlyEntryUses(&F, 0))
+        continue;
+      AddrTaken[F.getFunctionType()].push_back(&F);
+    }
+
     // 2) 태스크별 reachable set, 3) sink 인자 추적
     for (auto &[TName, Entry] : Tasks) {
       FnSet R = reach(Entry, AddrTaken);
       for (Function *F : R) {
-        if (F->isDeclaration())
+        if (F->isDeclaration() || Cfg.ExcludeCallers.count(F->getName().str()))
           continue;
         for (Instruction &I : instructions(*F)) {
           auto *CB = dyn_cast<CallBase>(&I);
@@ -465,6 +522,43 @@ struct DmaClusterPass : PassInfoMixin<DmaClusterPass> {
 
     // 4) annotate 우선
     readAnnotations(S);
+    for (auto &[G, B] : S.Bufs) {
+      if (B.Forced.empty())
+        continue;
+      // annotate 로 지정된 버퍼도 sink 경유 버퍼와 같은 배치 조건을 만족해야 한다
+      // (NOLOAD cluster → 초기값이 있으면 조용히 사라짐, 상수/외부 정의는 배치 불가).
+      std::string Why;
+      if (G->isDeclaration())
+        Why = "정의가 LTO 모듈 밖에 있음";
+      else if (G->isConstant())
+        Why = "상수 (Flash) 는 cluster 에 둘 수 없음";
+      else if (G->hasInitializer() && !G->getInitializer()->isNullValue())
+        Why = "0 이 아닌 초기값. DMA cluster 는 NOLOAD(0 초기화)";
+      else if (G->hasSection() && !G->getSection().starts_with(".dma."))
+        Why = ("이미 section 지정: " + G->getSection()).str();
+      StringRef F = B.Forced;
+      if (Why.empty() && !F.starts_with("shared:") && !Tasks.count(F.str()))
+        Why = ("annotate 의 태스크 '" + F + "' 가 태스크 entry 목록에 없음").str();
+      if (Why.empty() && F.starts_with("shared:") && F.size() == 7)
+        Why = "annotate(\"dma:shared:\") 에 이름이 없음";
+      if (!Why.empty()) {
+        S.diag("annotated-unplaceable", "error", F, nullptr,
+               (G->getName() + ": " + Why).str());
+        B.Forced.clear();
+        B.AutoOwners.clear(); // 배치하지 않는다
+        continue;
+      }
+      if (!F.starts_with("shared:") && !B.AutoOwners.empty() &&
+          (B.AutoOwners.size() != 1 || *B.AutoOwners.begin() != F.str())) {
+        std::string J;
+        for (const std::string &O : B.AutoOwners)
+          J += (J.empty() ? "" : ",") + O;
+        S.diag("annotate-override", "warning", F, nullptr,
+               (G->getName() + ": 자동 판정 owner {" + J +
+                "} 를 annotate 로 덮어씀 → 다른 태스크의 NS-MPU 에는 넣지 않음")
+                   .str());
+      }
+    }
 
     // 5) cluster 결정과 section 부여
     //    key: "t:<task>" (전용) / "s:<owner1,owner2,..>" 또는 "s:<name>" (공유)
@@ -515,8 +609,10 @@ struct DmaClusterPass : PassInfoMixin<DmaClusterPass> {
                                     : DL.getPreferredAlign(G).value();
         Bound += Sz + (Al > 1 ? Al - 1 : 0); // 정렬 패딩 상한 포함
         const BufInfo &B = S.Bufs[G];
-        for (const std::string &O : B.AutoOwners)
-          Owners.insert(O);
+        // 태스크 전용(annotate 포함): owner = 그 태스크 하나. 공유: 실제 사용 태스크들.
+        if (Shared)
+          for (const std::string &O : B.AutoOwners)
+            Owners.insert(O);
         json::Array Sites;
         for (const std::string &L : B.Sites)
           Sites.push_back(L);
@@ -528,6 +624,9 @@ struct DmaClusterPass : PassInfoMixin<DmaClusterPass> {
       }
       if (!Shared)
         Owners.insert(Key.substr(2));
+      else if (Owners.empty())
+        S.diag("shared-no-owner", "warning", Key, nullptr,
+               "공유 cluster 를 쓰는 태스크가 분석되지 않음 → 어느 태스크 NS-MPU 에도 들어가지 않음");
       for (const std::string &O : Owners)
         JOwners.push_back(O);
       JClusters.push_back(json::Object{{"id", Id},
@@ -542,6 +641,17 @@ struct DmaClusterPass : PassInfoMixin<DmaClusterPass> {
     for (auto &[TName, Entry] : Tasks)
       JTasks[TName] = json::Object{{"entry", Entry->getName().str()}};
 
+    // 진단 순서: 함수 순회 순서와 무관하게 (loc, kind, msg) 순
+    std::vector<json::Value> DV(S.Diags.begin(), S.Diags.end());
+    auto key = [](const json::Value &V) {
+      const json::Object *O = V.getAsObject();
+      auto g = [&](StringRef K) { return O->getString(K).value_or("").str(); };
+      return g("loc") + "\x1f" + g("kind") + "\x1f" + g("task") + "\x1f" + g("msg");
+    };
+    llvm::sort(DV, [&](const json::Value &A, const json::Value &B) {
+      return key(A) < key(B);
+    });
+    S.Diags = json::Array(DV);
     json::Object Root{{"version", 1},
                       {"clusters", std::move(JClusters)},
                       {"tasks", std::move(JTasks)},

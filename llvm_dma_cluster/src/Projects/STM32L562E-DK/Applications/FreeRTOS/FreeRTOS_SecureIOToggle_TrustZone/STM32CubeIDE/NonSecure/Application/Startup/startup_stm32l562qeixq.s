@@ -93,6 +93,8 @@ LoopFillZerobss:
 	bcc	FillZerobss
 
 /* Call static constructors */
+/* llvm_dma_cluster: DMA cluster(NOLOAD) 0 초기화. guard 는 Secure 이므로 건드리지 않는다 */
+  bl dma_zero_clusters
   bl __libc_init_array
 /* Call the application's entry point.*/
 	bl	main

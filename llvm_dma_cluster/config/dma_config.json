@@ -1,13 +1,67 @@
 {
   "out": "build/ns/dma_layout.json",
   "sinks": [
-    { "func": "SECURE_dma_m2m_start", "args": [1] },
-    { "func": "App_DmaM2M",           "args": [2] },
-    { "func": "HAL_UART_Receive_DMA", "args": [1] },
-    { "func": "HAL_UART_Transmit_DMA","args": [1] },
-    { "func": "HAL_SPI_Receive_DMA",  "args": [1] }
+    {
+      "func": "SECURE_dma_m2m_start",
+      "args": [
+        1
+      ]
+    },
+    {
+      "func": "SECURE_dma_m2m_start_table",
+      "args": [
+        1
+      ]
+    },
+    {
+      "func": "SECURE_dma_m2m_start_svc",
+      "args": [
+        1
+      ]
+    },
+    {
+      "func": "SECURE_dma_m2m_start_asm",
+      "args": [
+        1
+      ]
+    },
+    {
+      "func": "App_DmaM2M",
+      "args": [
+        2
+      ]
+    },
+    {
+      "func": "HAL_UART_Receive_DMA",
+      "args": [
+        1
+      ]
+    },
+    {
+      "func": "HAL_UART_Transmit_DMA",
+      "args": [
+        1
+      ]
+    },
+    {
+      "func": "HAL_SPI_Receive_DMA",
+      "args": [
+        1
+      ]
+    }
   ],
-  "task_create_apis": ["xTaskCreate", "xTaskCreateStatic",
-                       "xTaskCreateRestricted", "xTaskCreateRestrictedStatic"],
-  "heap_allocators": ["pvPortMalloc", "malloc", "calloc"]
+  "task_create_apis": [
+    "xTaskCreate",
+    "xTaskCreateStatic",
+    "xTaskCreateRestricted",
+    "xTaskCreateRestrictedStatic"
+  ],
+  "heap_allocators": [
+    "pvPortMalloc",
+    "malloc",
+    "calloc"
+  ],
+  "exclude_callers": [
+    "App_DmaAttackTests"
+  ]
 }
