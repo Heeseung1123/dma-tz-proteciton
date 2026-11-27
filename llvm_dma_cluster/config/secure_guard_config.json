@@ -1,0 +1,15 @@
+{
+  "out": "build/secure/secure_guard_candidates.json",
+  "boot_fn": "dma_boot_config",
+  "mode": "annotated",
+  "max_size": 256,
+  "post_boot_handlers": [
+    "GTZC_IRQHandler",
+    "DMA1_Channel1_IRQHandler"
+  ],
+  "exclude": [
+    "s_busy",
+    "g_pad_top",
+    "g_idle_psp"
+  ]
+}
