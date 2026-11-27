@@ -54,6 +54,7 @@ typedef struct { volatile uint32_t magic, id, n; } bench_hdr_t;
 #define BENCH_ID_VERIFY_TABLE  8u   /* verify_table (VERIFY_CALIB 를 뺀다) */
 #define BENCH_ID_START_ASM    13u   /* 열: start_asm 전체, 내부(T4-T1). START 와 같은 방법 (9-12 는 ISR 벤치) */
 #define BENCH_ID_INNER_CALIB_ASM 14u /* start_asm 의 T1, T4 기록 비용 (movw/movt 형식) */
+#define BENCH_ID_ALLOC        15u   /* BENCH_ALLOC 빌드: portALLOCATE_SECURE_CONTEXT 1회 (C 중재자 Task 의 1회 비용) */
 #define BENCH_ID_END           0xFFu
 
 extern int      SECURE_nop3(void *a, void *b, uint32_t c);
@@ -216,6 +217,53 @@ static void bench_isr_table(uint32_t id, int secure, int dma)
 }
 #endif /* BENCH_ISR_TS */
 
+#if defined(BENCH_ALLOC)
+/* ---- Secure context 할당 비용 (C 중재자를 쓰는 DMA Task 가 시작할 때 한 번 내는 비용) ----
+ * 구간: portALLOCATE_SECURE_CONTEXT(configMINIMAL_SECURE_STACK_SIZE) 호출 ~ 복귀 =
+ *   SVC 진입 -> vPortSVCHandler_C -> SecureContext_AllocateContext (NSC, Secure pvPortMalloc 1040 B 포함)
+ *   -> SecureContext_LoadContext (NSC) -> 예외 복귀  [코드: port.c portSVC_ALLOCATE_SECURE_CONTEXT].
+ * AllocateContext 는 PSPLIM_S == 0 (로드된 context 없음) 일 때만 할당한다 [코드: secure_context.c].
+ * 그래서 매 회 Secure context 가 없는 새 Task 를 만들어 그 안에서 한 번 재고, Task 는 스스로 지운다.
+ * Bench Task 에서 helper 로 전환될 때 PendSV 의 SaveContext 가 PSPLIM_S = 0 으로 만든다 [코드].
+ * 지운 Task 의 TCB 와 Secure context 는 IDLE 이 해제한다 (portCLEAN_UP_TCB) -> 다음 회 전에 vTaskDelay 로 IDLE 을 돌린다.
+ * cold 조건은 지원하지 않는다: SECURE_bench_cold 는 C NSC 라 Secure 스택이 필요한데, helper 는 측정 전에 context 가 없다. */
+static volatile uint32_t s_benchAlloc;
+static void bench_alloc_helper(void *pv)
+{
+    (void)pv;
+    uint32_t a;
+    BENCH_MEASURE_NS(a, portALLOCATE_SECURE_CONTEXT(configMINIMAL_SECURE_STACK_SIZE));
+    s_benchAlloc = a;
+    vTaskDelete(NULL);
+}
+
+static void bench_alloc_main(void)
+{
+    uint32_t i, a;
+    for (i = 0; i < BENCH_N; i++)
+    {
+        BENCH_MEASURE_NS(a, ;);
+        BENCH_ROW(i)[0] = a;
+    }
+    bench_table_done(BENCH_ID_NS_CALIB);
+
+    for (i = 0; i <= BENCH_N; i++)                   /* i == 0: warm-up, not stored */
+    {
+        s_benchAlloc = 0u;
+        /* 우선순위가 Bench Task 보다 높아 생성 즉시 실행되고, 지워진 뒤 여기로 돌아온다 */
+        BaseType_t ok = xTaskCreate(bench_alloc_helper, "alloc", 256, NULL,
+                                    (tskIDLE_PRIORITY + 2) | portPRIVILEGE_BIT, NULL);
+        configASSERT(ok == pdPASS);
+        configASSERT(s_benchAlloc != 0u);
+        vTaskDelay(2);                                /* IDLE 이 TCB 와 Secure context 를 해제 */
+        if (i > 0u) { BENCH_ROW(i - 1u)[0] = s_benchAlloc; }
+    }
+    bench_table_done(BENCH_ID_ALLOC);
+    bench_table_done(BENCH_ID_END);
+    for (;;) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+}
+#endif /* BENCH_ALLOC */
+
 /* DMA_Task_A 가 호출하는 진입점 */
 static void Bench_Main(void)
 {
@@ -224,6 +272,10 @@ static void Bench_Main(void)
     uint32_t i, a;
 
     for (i = 0; i < BENCH_LEN; i++) { BENCH_SRC[i] = (uint8_t)i; }
+
+#if defined(BENCH_ALLOC)
+    bench_alloc_main();
+#endif
 
 #if defined(BENCH_ISR_TS)
     /* ISR 빌드는 ISR 표만 잰다. CH2 는 Secure main.c 가 SECM=0, ITNS=1 로 풀어 두었다.

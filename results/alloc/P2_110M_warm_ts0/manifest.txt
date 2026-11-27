@@ -1,0 +1,8 @@
+variant=P2_110M_warm_ts0 profile=P2 S=-O1 NS=-O1 defs=[ -DBENCH_PHASE=1 -DBENCH_ALLOC -DBENCH_ICACHE]
+git=5622594b48d215b00371a07792161efe0c179f66 dirty= M Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM33/secure/secure_context.c;
+arm-none-eabi-gcc (GNU Tools for STM32 14.3.rel1.20251027-0700) 14.3.1 20250623
+7b451ac8b50c28694ac8a8cef2a0e37086d08284ee36a00905ea824b81efccc8  FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf
+75eb9597ac05ad1cd3476b01410240f7e3b48550cec02129bafecf71fe485ef3  FreeRTOS_SecureIOToggle_TrustZone_Secure.elf
+   text	   data	    bss	    dec	    hex	filename
+  35480	  10240	  12624	  58344	   e3e8	results/alloc/P2_110M_warm_ts0/FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf
+   9552	     32	  11992	  21576	   5448	results/alloc/P2_110M_warm_ts0/FreeRTOS_SecureIOToggle_TrustZone_Secure.elf
