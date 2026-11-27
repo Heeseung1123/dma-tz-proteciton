@@ -7,6 +7,19 @@
 >
 > **LLVM 을 잘 모르면 먼저 [EXPLAINED.md](EXPLAINED.md) 를 읽을 것.**
 
+## 실행 (2026-11-27 실검증 경로 — 자세한 기록은 [VERIFY_LOG.md](VERIFY_LOG.md))
+
+```bash
+cd ~/dma-tz && ./build.sh                       # GCC baseline (⓪ 의 import library 를 만든다)
+cd llvm_dma_cluster
+bash scripts/build_all.sh                       # 플러그인(LLVM 18) → NS 2-pass → Secure ②③④⑤ → check_pair
+bash tests/run_tests.sh                         # 단위·음성·양성 시험 (build/t_*)
+```
+- LLVM 18 이 시스템에 없으면 `scripts/env_llvm18.sh` 가 `~/opt/root18`(apt download + dpkg -x) 을 쓴다.
+- `~/dma-tz` 의 프로젝트 파일은 수정하지 않는다. 바뀐 파일은 `src/<같은 상대 경로>` 사본이고 빌드 스크립트가 사본을 우선한다.
+- 산출물: `build/ns/ns.elf`, `build/secure/secure.elf` (+ `.map`, `secure_nsclib.o`). 보드 절차: [BOARD_TEST.md](BOARD_TEST.md).
+- 아래 §3–§6 의 경로·변수 예시(`project/NonSecure/Core/Src`, `OUT=$ROOT/build/ns` 등)는 초안 기준이다. 실제 값은 스크립트를 따른다.
+
 ## Secure 데이터를 guard 블록에 배치 (storage binding)
 
 | 파일 | 역할 |

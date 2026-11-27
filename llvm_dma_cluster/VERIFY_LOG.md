@@ -61,3 +61,33 @@
   짝이 맞는 manifest 로는 0.
 - T3 빌드 실패해야 하는 것: 초기값 있는 annotate 버퍼, 없는 태스크 이름, 스택 버퍼, cluster 7 개(> 태그 4), 128 KB cluster(lld region 초과) — 모두 실패 + 기대 진단.
 - T4 annotate 양성: sink 사용처 없는 annotate 버퍼 배치, Task A 가 쓰는 B-annotate 버퍼 → owner = B 만 + `annotate-override` 경고.
+
+## 개선 (모든 단계 통과 후)
+| # | 내용 | 결과 |
+|---|---|---|
+| 22 | 진단/`sites` 위치에 인라인 호출 체인 (`app_freertos.c:179 <- app_freertos.c:225`) — 래퍼가 per-TU -O2 에서 인라인되면 태스크 줄이 안 보였음 | 버퍼마다 태스크의 호출 줄이 나옴 |
+| 23 | `unresolved-load` 는 README 상 "annotate 로 보완" 인데 error 가 남아 STRICT 빌드가 항상 실패 → 그 태스크(또는 공유)에 annotate DMA 버퍼가 있으면 warning 으로 낮춤 (놓친 버퍼는 런타임 TTT/TTAT 가 거부 = fail-closed) | 단위 시험 |
+| 24 | `check_layout.py`: `{cluster start, cap}` NS-MPU region 쌍이 이미지 읽기 전용 데이터에 owner 수만큼 있는지 (dma_regions.h 미반영 탐지), cluster 미사용 바이트 보고 | 음성 시험 `stale_regions` |
+| 25 | `gen_layout.py`: cluster 별 bound → cap 표 출력 | 현재 미사용 192 B (공유 64 B cluster 의 256 B 올림), guard 768 B |
+| 26 | `tests/pass/`: opt 단위 시험 13 항목 (void(ptr) 간접 호출 정밀도, Argument 역추적, 포인터 변수, heap/stack error, exclude_callers, annotate) | PASS |
+| 27 | `secure/secure_dma_entry_min.S` (선택안, **기본 아님**): baseline `SECURE_dma_m2m_start_asm` 본문 + pad 검사 6 명령. `MEDIATOR_S=min` | 빌드·veneer 동일·check_pair 0 |
+
+## 시험 요약 (마지막 실행: 처음부터 `rm -rf build && build_all.sh && tests/run_tests.sh`)
+- 1단계 플러그인: OK (LLVM 18.1.8). 2단계 NS: OK (1/2차 JSON 동일, check_layout OK). 3단계 Secure: OK (veneer 16 개 동일, check_pair 0).
+- 4단계 보드: **실행 안 함** (아래 결정 D4). 절차·기대값: BOARD_TEST.md.
+- 5단계 + 개선 시험: `tests/run_tests.sh` PASS 14 / FAIL 0.
+- GCC baseline: `./build.sh` 그대로 빌드 (프로젝트 원본 파일 변경 없음. 작업 전부터 있던 `secure_context.c` 공백 수정 1 줄은 건드리지 않음).
+
+## 결정이 필요한 항목 (사용자)
+- **D1 mediator 오버헤드.** 하네스 `secure_dma_entry.S` 성공 경로 59 명령 vs 현재 baseline `SECURE_dma_m2m_start_asm` 34 명령 (+25).
+  landing pad 고유 비용은 pad 검사 6 명령뿐이고, 나머지(IPSR 검사 3, CCR.EN=0 5, len==0 2, IFCR 2, 레지스터/APSR 정리 등)는
+  baseline 이 근거를 달아 뺀 것들이다(secure_nsc.c 주석, gap-analysis H). 선택안 `MEDIATOR_S=min` = 40 명령. 어느 쪽을 기준으로 할지.
+- **D2 컨텍스트 전환 오버헤드.** landing pad 패치(secure_context_patch.md)로 `LoadContextAsm` 9→13, `SaveContextAsm` 13→21 명령
+  (Secure context 를 가진 태스크 전환 때만). "전환당 사이클 추가 없음" 과 "landing pad 유지" 가 충돌한다. 줄이는 안(제안만, 미적용):
+  g_pad_top/g_idle_psp 를 한 구조체로 묶어 base 1 회 적재, pad base 를 미리 계산해 `sub` 제거, Save 의 `PSPLIM=0` 선행 쓰기 제거 → Save +4 정도.
+- **D3 NS-MPU region.** 공유 cluster 때문에 DMA 태스크가 configurable region 3/3 을 쓴다 (baseline 2/3). CLAUDE.md 의 "NS-MPU 영역 추가 사용 금지" 와 충돌.
+  공유 버퍼를 빼면 2/3 으로 돌아간다.
+- **D4 보드.** STLINK-V3 가 연결되어 있지만 CLAUDE.md 는 보드 실행을 사용자 몫으로 정하고 있고, 이 이미지들은 한 번도 실행된 적이 없어 올리지 않았다.
+  BOARD_TEST.md 절차로 직접 확인하거나, 올려도 된다고 하면 그 절차대로 진행한다.
+- **D5 커밋 규칙.** "~/dma-tz 안 파일 수정 금지" 지시에 따라 docs/CHANGES.md, docs/gap-analysis.md 에는 기록하지 않았다 (이 로그에만).
+- **D6 툴체인.** LLVM 18 은 sudo 없이 `~/opt/root18` 에 풀어 썼다. 정식 설치(apt.llvm.org 또는 `apt install llvm-18-dev lld-18`)를 원하면 env_llvm18.sh 가 자동으로 그쪽을 쓴다.

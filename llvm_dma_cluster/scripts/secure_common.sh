@@ -31,7 +31,12 @@ S_SRCS_REL=(
 )
 # llvm_dma_cluster 가 추가하는 Secure 파일 (TOOLS 기준)
 S_ADD_C=( secure/secure_dma_boot.c secure/secure_guard_bind.c )
-S_ADD_ASM=( secure/secure_dma_entry.S )
+# MEDIATOR_S=full (기본, secure_dma_entry.S) | min (secure_dma_entry_min.S: baseline _asm 본문 + pad 검사)
+case "${MEDIATOR_S:-full}" in
+  full) S_ADD_ASM=( secure/secure_dma_entry.S ) ;;
+  min)  S_ADD_ASM=( secure/secure_dma_entry_min.S ) ;;
+  *) echo "MEDIATOR_S=full|min" >&2; exit 1 ;;
+esac
 S_STARTUP_REL=$_P/STM32CubeIDE/Secure/Application/Startup/startup_stm32l562qeixq.s
 S_LDS=$(ov "$_P/STM32CubeIDE/Secure/STM32L562QEIXQ_FLASH.ld")
 

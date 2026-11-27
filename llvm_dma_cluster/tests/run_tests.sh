@@ -83,5 +83,12 @@ assert any(d["kind"] == "annotate-override" for d in L["diagnostics"])
 EOF
 else bad "override: 빌드 실패"; fi
 
+echo "== T5 mediator 선택안 MEDIATOR_S=min (baseline _asm 본문 + pad 검사)"
+rm -rf "$B/t_min"; mkdir -p "$B/t_min"; cp -r "$B/secure" "$B/t_min/"
+if S_OUT=$B/t_min/secure MEDIATOR_S=min bash "$TOOLS/scripts/build_secure.sh" > "$B/t_min.log" 2>&1 \
+   && python3 "$TOOLS/scripts/check_pair.py" "$B/t_min/secure/secure.elf" "$B/ns/ns.elf" >> "$B/t_min.log"; then
+  ok "min: Secure 빌드 + veneer 동일 + check_pair 0"
+else bad "min (build/t_min.log)"; fi
+
 echo "== 결과: PASS $PASS / FAIL $FAILN"
 [ "$FAILN" -eq 0 ]
