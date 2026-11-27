@@ -262,6 +262,8 @@ static int App_DmaM2M(dma_task_globals_t *g, void *src, void *dst, uint32_t len)
     g->dmaPending = 1u;          /* set before start: the ISR may run right after EN */
 #if defined(MEDIATOR_INSECURE)
     int r = Insecure_dma_m2m_start(src, dst, len);
+#elif MEDIATOR_ASM
+    int r = SECURE_dma_m2m_start_asm(src, dst, len);   /* stackless mediator */
 #else
     int r = SECURE_dma_m2m_start(src, dst, len);
 #endif
@@ -328,7 +330,9 @@ static StackType_t xPlainTaskStack[ STACK_SIZE_WORDS ] __attribute__((aligned(32
 static void vDmaTaskA( void *pvParameters )
 {
   (void)pvParameters;
-#if !defined(MEDIATOR_INSECURE)   /* the baseline DMA tasks never call into Secure */
+#if !defined(MEDIATOR_INSECURE) && !(MEDIATOR_ASM && !defined(BENCH_PHASE) && !defined(DMA_NOTIFY_BLXNS))
+  /* Not with the stackless mediator: it is this task's only Secure entry (BENCH_PHASE also calls the
+   * C bench entries, DMA_NOTIFY_BLXNS uses the C mediator) */
   portALLOCATE_SECURE_CONTEXT(configMINIMAL_SECURE_STACK_SIZE);
 #endif
 
@@ -353,7 +357,9 @@ static void vDmaTaskA( void *pvParameters )
 static void vDmaTaskB( void *pvParameters )
 {
   (void)pvParameters;
-#if !defined(MEDIATOR_INSECURE)   /* the baseline DMA tasks never call into Secure */
+#if !defined(MEDIATOR_INSECURE) && !(MEDIATOR_ASM && !defined(BENCH_PHASE) && !defined(DMA_NOTIFY_BLXNS))
+  /* Not with the stackless mediator: it is this task's only Secure entry (BENCH_PHASE also calls the
+   * C bench entries, DMA_NOTIFY_BLXNS uses the C mediator) */
   portALLOCATE_SECURE_CONTEXT(configMINIMAL_SECURE_STACK_SIZE);
 #endif
 

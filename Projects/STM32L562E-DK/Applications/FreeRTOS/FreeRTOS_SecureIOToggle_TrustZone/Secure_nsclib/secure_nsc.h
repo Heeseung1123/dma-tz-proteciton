@@ -58,6 +58,15 @@ void SECURE_LEDToggle(void);
  * EVAL_MEM: memory evaluation, bench-only / comparison-only entry points are not built. */
 #if !defined(MEDIATOR_INSECURE)
 int SECURE_dma_m2m_start(void*, void*, uint32_t);
+/* MEDIATOR_ASM=1: stackless mediator (naked asm, PRIMASK_S, no Secure stack). The DMA tasks then
+ * skip portALLOCATE_SECURE_CONTEXT (except BENCH_PHASE, whose C bench entries need a stack).
+ * 0 = the C mediator SECURE_dma_m2m_start, as before. */
+#ifndef MEDIATOR_ASM
+#define MEDIATOR_ASM 1
+#endif
+#if MEDIATOR_ASM
+int SECURE_dma_m2m_start_asm(void*, void*, uint32_t);
+#endif
 #if !defined(EVAL_MEM)
 int SECURE_dma_m2m_start_table(void*, void*, uint32_t);   /* 테이블 방식 비교 대상 (secure_nsc.c) */
 #endif

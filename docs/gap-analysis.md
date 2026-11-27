@@ -115,3 +115,30 @@ CH2 는 중재자와 가드 검사 없이 NS 가 직접 쓴다. 기본 빌드와
    `LAYOUT_EXPECT=2001b500` 검사를 두었다 (`build_variant.sh`).
 4. **참고: `s_dmaSrcA/B` NS-MPU 영역 base 가 32B 정렬이 아니다** (`aligned(4)`, 예: 0x2001b448). 포트가 base 를 내림, limit 을 32B 로 맞추므로 실제 영역은
    요청보다 넓다 (0x2001b440–0x2001b47f) [코드: port.c 1986–1988]. 기본 빌드도 같다. 이번 측정에서는 바꾸지 않았다.
+
+## H. 스택 없는 중재자 `SECURE_dma_m2m_start_asm` (논문 밖 확장, 2026-11-27, 사용자 선택 안 C)
+
+`MEDIATOR_ASM` (기본 1, `Secure_nsclib/secure_nsc.h`). 기존 C 중재자 `SECURE_dma_m2m_start`/`verify_inst` 는 그대로 두었다.
+`MEDIATOR_ASM=0` 이면 Secure·NS 바이너리가 변경 전과 같다 [실측: objcopy -O binary 후 cmp, P1].
+
+1. **구조.** `cmse_nonsecure_entry` + `naked` 이고, 쓰는 레지스터는 r0–r3, r12 뿐이다. push/call/FP 명령이 없다 [실측: objdump].
+   GCC 14.3.1 이 `__acle_se_` 심볼과 `.gnu.sgstubs` veneer (`sg; b.w`) 를 만들고, 자동 에필로그는 만들지 않는다 [실측].
+   DMA Task A/B 는 `portALLOCATE_SECURE_CONTEXT` 를 하지 않는다. 예외: `BENCH_PHASE` (C bench 진입 함수가 스택을 씀), `DMA_NOTIFY_BLXNS` (C 중재자를 씀).
+2. **인터럽트.** 함수 전체를 `cpsid i` (PRIMASK_S) 로 감싼다. Secure Thread 에서 예외가 들어오면 프레임이 PSP_S 에 쌓이는데,
+   Secure context 가 없는 Task 는 PSP_S = 0 이라 fault 가 나기 때문이다 [아키텍처 도출].
+   PRIMASK_S 는 실행 우선순위를 0 으로 올리므로 우선순위 설정이 가능한 S/NS 예외가 들어오지 못한다 [아키텍처 도출, DDI0553 절 번호 미확인].
+   `cpsid` 가 동작하는 것은 CONTROL_S 가 특권(0x02)으로 고정되어 있기 때문이다 [코드: secure_context.c SecureContext_Init].
+   **알려진 구멍 (프로토타입 한계로 수용):** SG → `b.w` → `cpsid` 사이의 창에 예외가 오면 fault 가 난다. NMI/HardFault 는 마스킹되지 않는다.
+   SG 직후 예외 수용 근거 절: 미확인.
+3. **C 경로에서 뺀 것과 근거.**
+   - LDREX/STREX: PRIMASK_S 중에는 필요 없다. 단일 코어이고, `s_busy` 를 쓰는 다른 주체는 DMA ISR 뿐인데 마스킹된다 [아키텍처 도출]. 기존 바이트 `s_busy` 를 ldrb/strb 로 쓴다.
+   - `len == 0` 검사: SUBS/ADDS 가 dst ≠ 0 이면 C=1 → BCS 에서 거부된다. dst = 0 이면 end = 0xFFFFFFFF 가 되고, NS-MPU 비특권 RW 비트로 거부된다 [아키텍처 도출, 보드 미확인].
+   - CCR.EN = 0: `s_busy == 0` 이면 EN == 0 이다. EN 을 켜는 곳은 이 함수뿐이고, ISR 은 EN 을 끈 뒤 s_busy 를 지우며, TEIF 는 하드웨어가 EN 을 끄고, GTZC 중단은 s_busy = 1 을 남긴다 [코드].
+   - IFCR = CGIF1: ISR 이 TC/TE 양쪽에서 s_busy = 0 전에 CGIF1 을 지운다 [코드].
+4. **순서 변경.** 잠금 → CPAR/CM0AR/CNDTR 쓰기 → 검증 → EN 순서다. 채널을 소유하고 EN = 0 이면 레지스터 값은 아무 효과가 없으므로, 그 뒤 r0/r2 를 재사용해 끝 주소를 다시 계산하지 않는다.
+   거부되면 s_busy 를 놓고 EN 은 0 으로 남는다. 레지스터에 남은 NS 값은 다음 요청이 덮어쓴다 [아키텍처 도출].
+5. **CMSE 복귀 정리.** r12 (TT 결과 / CCR 값) 만 지운다. r1 = NS dst, r2 = dst+len-1, r3 = DMA1_Channel1_S 주소 또는 1, r0 = 반환값으로 Secure 정보가 없다.
+   APSR 는 거부 경로에서만 지운다 (TTT 결과 CMP 의 플래그). 성공 경로의 마지막 플래그 쓰기는 TST #imm (C 상수) 와 MOVS 이고, V 는 NS 입력에서 나온 ADDS 값이다 [아키텍처 도출].
+   FP 레지스터는 건드리지 않으므로 지우지 않는다.
+6. **판정은 기존과 같다.** src 미검증 (B-4), MRVALID 미검사 (A-3) 를 그대로 두었다.
+7. **`BENCH_TS` 훅.** T1 은 `cpsid` 직후, T4 는 EN 직후다. 이 함수를 부르는 NS bench 항목은 아직 없다.

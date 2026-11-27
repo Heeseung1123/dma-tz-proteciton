@@ -125,6 +125,7 @@ CMSE_NS_ENTRY uint32_t SECURE_dma_buffer_request(uint32_t len)
 
 #include "stm32l5xx.h"
 #include <arm_cmse.h>
+#include <stddef.h>   /* offsetof (MEDIATOR_ASM static asserts) */
 
 /* MEDIATOR_INSECURE (memory baseline, cmpMemUsage.md): no Secure mediator, no S-MPU/MPCBB/TZIC
  * DMA protection. NS programs DMA1_CH1 directly (NonSecure app_freertos.c). */
@@ -317,6 +318,109 @@ int SECURE_dma_m2m_start(void *src_buf, void *dst_buf, uint32_t len)
 
     return 0;
 }
+
+#if MEDIATOR_ASM
+/*
+ * Stackless mediator (option C). Same checks and DMA programming as SECURE_dma_m2m_start +
+ * verify_inst, written so that neither the code nor the compiler touches the Secure stack:
+ * no push, no call, no FP instruction (so no FP clearing and no FP-extended frame).
+ * Registers: r0-r3, r12 only. r1 (dst) is never modified.
+ *
+ * Interrupts: PRIMASK_S (cpsid i) for the whole body. An exception taken in Secure Thread mode
+ * stacks its frame on PSP_S, and a task without a Secure context has PSP_S = 0 -> fault
+ * [아키텍처 도출]. PRIMASK_S raises the execution priority to 0, so no configurable-priority
+ * exception (S or NS) preempts the body [아키텍처 도출, DDI0553 section no. 미확인].
+ * Known hole (accepted for the prototype): the SG / B.W veneer window before cpsid.
+ * cpsid works because CONTROL_S is fixed privileged (0x02) by SecureContext_Init [코드].
+ *
+ * Removed / reordered compared to the C path (reasons in docs/gap-analysis.md H):
+ *  - LDREX/STREX: not needed while PRIMASK_S is set (single core, the only other writer of
+ *    s_busy is the DMA ISR, which is masked). Plain ldrb/strb on the existing s_busy.
+ *  - len == 0 check: SUBS/ADDS sets C for len = 0 and dst != 0 -> BCS rejects. dst = 0, len = 0
+ *    gives end = 0xFFFFFFFF; it is rejected by the NS-MPU RW bit (no unprivileged write).
+ *  - CCR.EN = 0 before programming: s_busy == 0 implies EN == 0 (only this code sets EN, the
+ *    ISR clears EN before s_busy, TEIF clears EN in hardware, GTZC abort leaves s_busy = 1).
+ *  - IFCR = CGIF1 before enable: the ISR clears CGIF1 before s_busy = 0 on both TC and TE.
+ *  - Lock and CPAR/CM0AR/CNDTR writes are moved BEFORE the checks: once the channel is owned
+ *    and EN = 0 the registers are inert, so r0 and r2 become free and no value has to be
+ *    recomputed (verify_inst recomputes nothing because len is dead there; here len is stored
+ *    first). On reject s_busy is released and EN stays 0.
+ *  - Return clearing: r12 (TT results / CCR) is cleared. r1 = NS dst, r2 = dst+len-1,
+ *    r3 = DMA1_Channel1_S address or 1, r0 = return: nothing Secure. APSR is cleared on the
+ *    reject path only (flags there can come from CMP of TTT results); on success the last
+ *    flag writers are TST #imm (C constant) and MOVS (N, Z), V comes from the NS-derived ADDS.
+ */
+_Static_assert(DMA1_Channel1_BASE_S == 0x50020008UL, "asm: DMA1_Channel1_S address");
+_Static_assert(offsetof(DMA_Channel_TypeDef, CCR)   == 0x0u, "asm: CCR offset");
+_Static_assert(offsetof(DMA_Channel_TypeDef, CNDTR) == 0x4u, "asm: CNDTR offset");
+_Static_assert(offsetof(DMA_Channel_TypeDef, CPAR)  == 0x8u, "asm: CPAR offset");
+_Static_assert(offsetof(DMA_Channel_TypeDef, CM0AR) == 0xCu, "asm: CM0AR offset");
+_Static_assert(DMA_CCR_EN == 1UL, "asm: CCR.EN bit");
+_Static_assert(sizeof(s_busy) == 1u, "asm: s_busy is accessed with ldrb/strb");
+
+#if defined(BENCH_PHASE) && defined(BENCH_TS)
+/* r3 = CYCCNT, r12 = &g_benchTx. Only at points where r3 and r12 are free. */
+#define MED_ASM_TS(sym)  "movw r3, #0x1004 \n movt r3, #0xE000 \n ldr r3, [r3] \n" \
+                         "movw r12, #:lower16:" #sym " \n movt r12, #:upper16:" #sym " \n str r3, [r12] \n"
+#else
+#define MED_ASM_TS(sym)  ""
+#endif
+
+__attribute__((cmse_nonsecure_entry, naked, used))
+int SECURE_dma_m2m_start_asm(void *src_buf, void *dst_buf, uint32_t len)
+{
+    (void)src_buf; (void)dst_buf; (void)len;
+    __asm volatile (
+        "cpsid  i                       \n"   /* PRIMASK_S: nothing stacks on PSP_S from here */
+        MED_ASM_TS(g_benchT1)
+        "movw   r12, #:lower16:s_busy   \n"
+        "movt   r12, #:upper16:s_busy   \n"
+        "ldrb   r3, [r12]               \n"
+        "cbnz   r3, 3f                  \n"   /* busy -> reject, nothing to release */
+        "movs   r3, #1                  \n"
+        "strb   r3, [r12]               \n"   /* s_busy = 1: channel owned */
+        "movw   r3, #0x0008             \n"
+        "movt   r3, #0x5002             \n"   /* r3 = DMA1_Channel1 (Secure alias), EN = 0 */
+        "str    r0, [r3, #8]            \n"   /* CPAR  = src  (r0 free from here) */
+        "str    r1, [r3, #12]           \n"   /* CM0AR = dst */
+        "str    r2, [r3, #4]            \n"   /* CNDTR = len  (r2 free from here) */
+        "subs   r2, r2, #1              \n"
+        "adds   r2, r2, r1              \n"   /* r2 = dst+len-1; C = overflow (also len == 0) */
+        "bcs    2f                      \n"
+        "ttat   r0, r1                  \n"   /* NS-MPU(base), unprivileged */
+        "ttat   r12, r2                 \n"   /* NS-MPU(end) */
+        "cmp    r0, r12                 \n"
+        "bne    2f                      \n"
+        "tst    r12, #0x80000           \n"   /* bit19 readwrite_ok */
+        "beq    2f                      \n"
+        "ttt    r0, r1                  \n"   /* S-MPU(base) */
+        "ttt    r12, r2                 \n"   /* S-MPU(end) */
+        "cmp    r0, r12                 \n"
+        "bne    2f                      \n"
+        "tst    r12, #0x200000          \n"   /* bit21, same as verify_inst */
+        "beq    2f                      \n"
+        "ldr    r12, [r3]               \n"
+        "orr    r12, r12, #1            \n"
+        "str    r12, [r3]               \n"   /* CCR.EN = 1 */
+        MED_ASM_TS(g_benchT4)
+        "movs   r0, #0                  \n"
+        "mov    r12, lr                 \n"
+        "cpsie  i                       \n"
+        "bxns   lr                      \n"
+        "2:                             \n"   /* reject after the lock: release, EN stays 0 */
+        "movw   r12, #:lower16:s_busy   \n"
+        "movt   r12, #:upper16:s_busy   \n"
+        "movs   r0, #0                  \n"
+        "strb   r0, [r12]               \n"
+        "3:                             \n"
+        "mov    r0, #-1                 \n"
+        "mov    r12, lr                 \n"
+        "msr    APSR_nzcvq, lr          \n"
+        "cpsie  i                       \n"
+        "bxns   lr                      \n"
+    );
+}
+#endif /* MEDIATOR_ASM */
 
 #if !defined(EVAL_MEM)   /* table-search comparison. EVAL_MEM = disable (also remove the secure_nsc.h decl and BENCH_TABLE tests) */
 /* Comparison target (paper Table 2): linear search of an 8-entry Flash table instead of the S-MPU tag.
