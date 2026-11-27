@@ -103,14 +103,34 @@ static inline void bench_before_iter(void)
 }
 
 /* T5 - T0 을 재는 공통 경계 */
+#if defined(BENCH_ICMON)
+/* 진단 전용 (cmpAsmMediator.md §9.7): 측정 구간의 ICACHE hit/miss 수. 구간 직전에 모니터를 0 으로 만들고,
+ * 구간 직후에 HMONR/MMONR 를 읽어 s_icm = hit << 16 | miss 로 둔다. 레지스터 접근이 더해져 사이클 값은
+ * 쓰지 않는다 (사이클은 BENCH_ICMON 없는 빌드). ICACHE 레지스터는 TZSC 로 Secure 설정을 하지 않아
+ * NS alias(ICACHE_NS) 로 접근한다 [코드]. 모니터는 S/NS 구분 없이 모든 ICACHE 조회를 센다 [추정]. */
+static volatile uint32_t s_icm;
+#define BENCH_ICM_START()  do { ICACHE->CR |= (ICACHE_CR_HITMRST | ICACHE_CR_MISSMRST); \
+                                ICACHE->CR &= ~(ICACHE_CR_HITMRST | ICACHE_CR_MISSMRST); } while (0)
+#define BENCH_ICM_STOP()   (s_icm = (ICACHE->HMONR << 16) | (ICACHE->MMONR & 0xFFFFu))
+#else
+#define BENCH_ICM_START()  ((void)0)
+#define BENCH_ICM_STOP()   ((void)0)
+#endif
 #define BENCH_MEASURE_NS(result, call)   \
     do {                                 \
+        BENCH_ICM_START();               \
         __DSB(); __ISB();                \
         uint32_t t0_ = DWT->CYCCNT;      \
         call;                            \
         __DSB();                         \
         (result) = DWT->CYCCNT - t0_;    \
+        BENCH_ICM_STOP();                \
     } while (0)
+#if defined(BENCH_ICMON)
+#define BENCH_ICM_COL(i)   (BENCH_ROW(i)[1] = s_icm)
+#else
+#define BENCH_ICM_COL(i)   ((void)0)
+#endif
 
 
 /* start 1회 측정. 측정 구간 동안 DMA IRQ(NVIC) 를 막아 전송 완료 ISR 과 NS 콜백이 T0-T5 에
@@ -345,12 +365,14 @@ static void bench_cx_run(uint32_t id, uint32_t mode)
         (void)(call);                                                    \
         for (i = 0; i < BENCH_N; i++)                                    \
         { bench_before_iter();                                           \
-          BENCH_MEASURE_NS(a, (void)(call)); BENCH_ROW(i)[0] = a; }      \
+          BENCH_MEASURE_NS(a, (void)(call)); BENCH_ROW(i)[0] = a;        \
+          BENCH_ICM_COL(i); }                                            \
         bench_table_done(id); } while (0)
 #define BENCH_LOOP_START(id, fn) do {                                   \
         fn(dst, g, &a);                                                  \
         for (i = 0; i < BENCH_N; i++)                                    \
-        { bench_before_iter(); fn(dst, g, &a); BENCH_ROW(i)[0] = a; }    \
+        { bench_before_iter(); fn(dst, g, &a); BENCH_ROW(i)[0] = a;      \
+          BENCH_ICM_COL(i); }                                            \
         bench_table_done(id); } while (0)
 
 static void bench_decomp_main(void)
@@ -359,7 +381,10 @@ static void bench_decomp_main(void)
     uint8_t *dst = s_dmaTaskMem[DMA_TASK_A].cluster.dst;
     uint32_t i, a;
 
-    for (i = 0; i < BENCH_N; i++) { bench_before_iter(); BENCH_MEASURE_NS(a, ;); BENCH_ROW(i)[0] = a; }
+#if defined(BENCH_ICMON)
+    ICACHE->CR |= ICACHE_CR_HITMEN | ICACHE_CR_MISSMEN;
+#endif
+    for (i = 0; i < BENCH_N; i++) { bench_before_iter(); BENCH_MEASURE_NS(a, ;); BENCH_ROW(i)[0] = a; BENCH_ICM_COL(i); }
     bench_table_done(BENCH_ID_NS_CALIB);
 
     BENCH_LOOP_NSC(BENCH_ID_EMPTY_NSC,  SECURE_nop3(NULL, NULL, 0));
