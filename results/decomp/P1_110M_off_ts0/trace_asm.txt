@@ -1,0 +1,38 @@
+# asm: 37 instructions from NS veneer to NS return (0x8046ba8)
+0x08048ad0  __SECURE_dma_m2m_start_asm_veneer in section .text of /hom    ldr.w	pc, [pc]	@ 0x8048ad4 <__SECURE_dma_m2m_start_asm_veneer+4>
+0x0c03e090  SECURE_dma_m2m_start_asm in section .gnu.sgstubs of /home/    sg
+0x0c03e094  SECURE_dma_m2m_start_asm + 4 in section .gnu.sgstubs of /h    b.w	0xc000fe4 <SECURE_dma_m2m_start_asm>
+0x0c000fe4  __acle_se_SECURE_dma_m2m_start_asm in section .text of /ho    cpsid	i
+0x0c000fe6  __acle_se_SECURE_dma_m2m_start_asm + 2 in section .text of    movw	r12, #64	@ 0x40
+0x0c000fea  __acle_se_SECURE_dma_m2m_start_asm + 6 in section .text of    movt	r12, #12288	@ 0x3000
+0x0c000fee  __acle_se_SECURE_dma_m2m_start_asm + 10 in section .text o    ldrb.w	r3, [r12]
+0x0c000ff2  __acle_se_SECURE_dma_m2m_start_asm + 14 in section .text o    cbnz	r3, 0xc001054 <SECURE_dma_m2m_start_asm+112>
+0x0c000ff4  __acle_se_SECURE_dma_m2m_start_asm + 16 in section .text o    movs	r3, #1
+0x0c000ff6  __acle_se_SECURE_dma_m2m_start_asm + 18 in section .text o    strb.w	r3, [r12]
+0x0c000ffa  __acle_se_SECURE_dma_m2m_start_asm + 22 in section .text o    movw	r3, #8
+0x0c000ffe  __acle_se_SECURE_dma_m2m_start_asm + 26 in section .text o    movt	r3, #20482	@ 0x5002
+0x0c001002  __acle_se_SECURE_dma_m2m_start_asm + 30 in section .text o    str	r0, [r3, #8]
+0x0c001004  __acle_se_SECURE_dma_m2m_start_asm + 32 in section .text o    str	r1, [r3, #12]
+0x0c001006  __acle_se_SECURE_dma_m2m_start_asm + 34 in section .text o    str	r2, [r3, #4]
+0x0c001008  __acle_se_SECURE_dma_m2m_start_asm + 36 in section .text o    subs	r2, #1
+0x0c00100a  __acle_se_SECURE_dma_m2m_start_asm + 38 in section .text o    adds	r2, r2, r1
+0x0c00100c  __acle_se_SECURE_dma_m2m_start_asm + 40 in section .text o    bcs.n	0xc001046 <SECURE_dma_m2m_start_asm+98>
+0x0c00100e  __acle_se_SECURE_dma_m2m_start_asm + 42 in section .text o    ttat	r0, r1
+0x0c001012  __acle_se_SECURE_dma_m2m_start_asm + 46 in section .text o    ttat	r12, r2
+0x0c001016  __acle_se_SECURE_dma_m2m_start_asm + 50 in section .text o    cmp	r0, r12
+0x0c001018  __acle_se_SECURE_dma_m2m_start_asm + 52 in section .text o    bne.n	0xc001046 <SECURE_dma_m2m_start_asm+98>
+0x0c00101a  __acle_se_SECURE_dma_m2m_start_asm + 54 in section .text o    tst.w	r12, #524288	@ 0x80000
+0x0c00101e  __acle_se_SECURE_dma_m2m_start_asm + 58 in section .text o    beq.n	0xc001046 <SECURE_dma_m2m_start_asm+98>
+0x0c001020  __acle_se_SECURE_dma_m2m_start_asm + 60 in section .text o    ttt	r0, r1
+0x0c001024  __acle_se_SECURE_dma_m2m_start_asm + 64 in section .text o    ttt	r12, r2
+0x0c001028  __acle_se_SECURE_dma_m2m_start_asm + 68 in section .text o    cmp	r0, r12
+0x0c00102a  __acle_se_SECURE_dma_m2m_start_asm + 70 in section .text o    bne.n	0xc001046 <SECURE_dma_m2m_start_asm+98>
+0x0c00102c  __acle_se_SECURE_dma_m2m_start_asm + 72 in section .text o    tst.w	r12, #2097152	@ 0x200000
+0x0c001030  __acle_se_SECURE_dma_m2m_start_asm + 76 in section .text o    beq.n	0xc001046 <SECURE_dma_m2m_start_asm+98>
+0x0c001032  __acle_se_SECURE_dma_m2m_start_asm + 78 in section .text o    ldr.w	r12, [r3]
+0x0c001036  __acle_se_SECURE_dma_m2m_start_asm + 82 in section .text o    orr.w	r12, r12, #1
+0x0c00103a  __acle_se_SECURE_dma_m2m_start_asm + 86 in section .text o    str.w	r12, [r3]
+0x0c00103e  __acle_se_SECURE_dma_m2m_start_asm + 90 in section .text o    movs	r0, #0
+0x0c001040  __acle_se_SECURE_dma_m2m_start_asm + 92 in section .text o    mov	r12, lr
+0x0c001042  __acle_se_SECURE_dma_m2m_start_asm + 94 in section .text o    cpsie	i
+0x0c001044  __acle_se_SECURE_dma_m2m_start_asm + 96 in section .text o    bxns	lr

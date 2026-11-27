@@ -1,0 +1,100 @@
+# c: 99 instructions from NS veneer to NS return (0x8046cc8)
+0x08048ae0  __SECURE_dma_m2m_start_veneer in section .text of /home/sy    ldr.w	pc, [pc]	@ 0x8048ae4 <__SECURE_dma_m2m_start_veneer+4>
+0x0c03e028  SECURE_dma_m2m_start in section .gnu.sgstubs of /home/syso    sg
+0x0c03e02c  SECURE_dma_m2m_start + 4 in section .gnu.sgstubs of /home/    b.w	0xc000ef4 <SECURE_dma_m2m_start>
+0x0c000ef4  __acle_se_SECURE_dma_m2m_start in section .text of /home/s    push	{r7, lr}
+0x0c000ef6  __acle_se_SECURE_dma_m2m_start + 2 in section .text of /ho    sub	sp, #24
+0x0c000ef8  __acle_se_SECURE_dma_m2m_start + 4 in section .text of /ho    add	r7, sp, #0
+0x0c000efa  __acle_se_SECURE_dma_m2m_start + 6 in section .text of /ho    str	r0, [r7, #12]
+0x0c000efc  __acle_se_SECURE_dma_m2m_start + 8 in section .text of /ho    str	r1, [r7, #8]
+0x0c000efe  __acle_se_SECURE_dma_m2m_start + 10 in section .text of /h    str	r2, [r7, #4]
+0x0c000f00  __acle_se_SECURE_dma_m2m_start + 12 in section .text of /h    ldr	r3, [r7, #4]
+0x0c000f02  __acle_se_SECURE_dma_m2m_start + 14 in section .text of /h    cmp	r3, #0
+0x0c000f04  __acle_se_SECURE_dma_m2m_start + 16 in section .text of /h    beq.n	0xc000f10 <SECURE_dma_m2m_start+28>
+0x0c000f06  __acle_se_SECURE_dma_m2m_start + 18 in section .text of /h    ldr	r3, [pc, #208]	@ (0xc000fd8 <SECURE_dma_m2m_start+228>)
+0x0c000f08  __acle_se_SECURE_dma_m2m_start + 20 in section .text of /h    ldrb	r3, [r3, #0]
+0x0c000f0a  __acle_se_SECURE_dma_m2m_start + 22 in section .text of /h    uxtb	r3, r3
+0x0c000f0c  __acle_se_SECURE_dma_m2m_start + 24 in section .text of /h    cmp	r3, #0
+0x0c000f0e  __acle_se_SECURE_dma_m2m_start + 26 in section .text of /h    beq.n	0xc000f16 <SECURE_dma_m2m_start+34>
+0x0c000f16  __acle_se_SECURE_dma_m2m_start + 34 in section .text of /h    ldr	r3, [r7, #8]
+0x0c000f18  __acle_se_SECURE_dma_m2m_start + 36 in section .text of /h    str	r3, [r7, #20]
+0x0c000f1a  __acle_se_SECURE_dma_m2m_start + 38 in section .text of /h    ldr	r1, [r7, #4]
+0x0c000f1c  __acle_se_SECURE_dma_m2m_start + 40 in section .text of /h    ldr	r0, [r7, #20]
+0x0c000f1e  __acle_se_SECURE_dma_m2m_start + 42 in section .text of /h    bl	0xc000ec0 <verify_inst>
+0x0c000ec0  verify_inst in section .text of /home/sysop/dma-tz/results    subs	r2, r1, #1
+0x0c000ec2  verify_inst + 2 in section .text of /home/sysop/dma-tz/res    adds	r2, r2, r0
+0x0c000ec4  verify_inst + 4 in section .text of /home/sysop/dma-tz/res    bcs.n	0xc000eea <verify_inst+42>
+0x0c000ec6  verify_inst + 6 in section .text of /home/sysop/dma-tz/res    ttat	r1, r0
+0x0c000eca  verify_inst + 10 in section .text of /home/sysop/dma-tz/re    ttat	r3, r2
+0x0c000ece  verify_inst + 14 in section .text of /home/sysop/dma-tz/re    cmp	r1, r3
+0x0c000ed0  verify_inst + 16 in section .text of /home/sysop/dma-tz/re    bne.n	0xc000eea <verify_inst+42>
+0x0c000ed2  verify_inst + 18 in section .text of /home/sysop/dma-tz/re    ubfx	r1, r3, #19, #1
+0x0c000ed6  verify_inst + 22 in section .text of /home/sysop/dma-tz/re    cbz	r1, 0xc000eea <verify_inst+42>
+0x0c000ed8  verify_inst + 24 in section .text of /home/sysop/dma-tz/re    ttt	r3, r0
+0x0c000edc  verify_inst + 28 in section .text of /home/sysop/dma-tz/re    ttt	r2, r2
+0x0c000ee0  verify_inst + 32 in section .text of /home/sysop/dma-tz/re    cmp	r3, r2
+0x0c000ee2  verify_inst + 34 in section .text of /home/sysop/dma-tz/re    bne.n	0xc000eea <verify_inst+42>
+0x0c000ee4  verify_inst + 36 in section .text of /home/sysop/dma-tz/re    ubfx	r0, r3, #21, #1
+0x0c000ee8  verify_inst + 40 in section .text of /home/sysop/dma-tz/re    bx	lr
+0x0c000f22  __acle_se_SECURE_dma_m2m_start + 46 in section .text of /h    mov	r3, r0
+0x0c000f24  __acle_se_SECURE_dma_m2m_start + 48 in section .text of /h    cmp	r3, #0
+0x0c000f26  __acle_se_SECURE_dma_m2m_start + 50 in section .text of /h    bne.n	0xc000f2e <SECURE_dma_m2m_start+58>
+0x0c000f2e  __acle_se_SECURE_dma_m2m_start + 58 in section .text of /h    ldr	r3, [pc, #168]	@ (0xc000fd8 <SECURE_dma_m2m_start+228>)
+0x0c000f30  __acle_se_SECURE_dma_m2m_start + 60 in section .text of /h    movs	r2, #1
+0x0c000f32  __acle_se_SECURE_dma_m2m_start + 62 in section .text of /h    strb	r2, [r3, #0]
+0x0c000f34  __acle_se_SECURE_dma_m2m_start + 64 in section .text of /h    ldr	r3, [pc, #164]	@ (0xc000fdc <SECURE_dma_m2m_start+232>)
+0x0c000f36  __acle_se_SECURE_dma_m2m_start + 66 in section .text of /h    ldr	r3, [r3, #0]
+0x0c000f38  __acle_se_SECURE_dma_m2m_start + 68 in section .text of /h    ldr	r2, [pc, #160]	@ (0xc000fdc <SECURE_dma_m2m_start+232>)
+0x0c000f3a  __acle_se_SECURE_dma_m2m_start + 70 in section .text of /h    bic.w	r3, r3, #1
+0x0c000f3e  __acle_se_SECURE_dma_m2m_start + 74 in section .text of /h    str	r3, [r2, #0]
+0x0c000f40  __acle_se_SECURE_dma_m2m_start + 76 in section .text of /h    ldr	r2, [pc, #152]	@ (0xc000fdc <SECURE_dma_m2m_start+232>)
+0x0c000f42  __acle_se_SECURE_dma_m2m_start + 78 in section .text of /h    ldr	r3, [r7, #12]
+0x0c000f44  __acle_se_SECURE_dma_m2m_start + 80 in section .text of /h    str	r3, [r2, #8]
+0x0c000f46  __acle_se_SECURE_dma_m2m_start + 82 in section .text of /h    ldr	r2, [pc, #148]	@ (0xc000fdc <SECURE_dma_m2m_start+232>)
+0x0c000f48  __acle_se_SECURE_dma_m2m_start + 84 in section .text of /h    ldr	r3, [r7, #8]
+0x0c000f4a  __acle_se_SECURE_dma_m2m_start + 86 in section .text of /h    str	r3, [r2, #12]
+0x0c000f4c  __acle_se_SECURE_dma_m2m_start + 88 in section .text of /h    ldr	r2, [pc, #140]	@ (0xc000fdc <SECURE_dma_m2m_start+232>)
+0x0c000f4e  __acle_se_SECURE_dma_m2m_start + 90 in section .text of /h    ldr	r3, [r7, #4]
+0x0c000f50  __acle_se_SECURE_dma_m2m_start + 92 in section .text of /h    str	r3, [r2, #4]
+0x0c000f52  __acle_se_SECURE_dma_m2m_start + 94 in section .text of /h    ldr	r3, [pc, #140]	@ (0xc000fe0 <SECURE_dma_m2m_start+236>)
+0x0c000f54  __acle_se_SECURE_dma_m2m_start + 96 in section .text of /h    movs	r2, #1
+0x0c000f56  __acle_se_SECURE_dma_m2m_start + 98 in section .text of /h    str	r2, [r3, #4]
+0x0c000f58  __acle_se_SECURE_dma_m2m_start + 100 in section .text of /    ldr	r3, [pc, #128]	@ (0xc000fdc <SECURE_dma_m2m_start+232>)
+0x0c000f5a  __acle_se_SECURE_dma_m2m_start + 102 in section .text of /    ldr	r3, [r3, #0]
+0x0c000f5c  __acle_se_SECURE_dma_m2m_start + 104 in section .text of /    ldr	r2, [pc, #124]	@ (0xc000fdc <SECURE_dma_m2m_start+232>)
+0x0c000f5e  __acle_se_SECURE_dma_m2m_start + 106 in section .text of /    orr.w	r3, r3, #1
+0x0c000f62  __acle_se_SECURE_dma_m2m_start + 110 in section .text of /    str	r3, [r2, #0]
+0x0c000f64  __acle_se_SECURE_dma_m2m_start + 112 in section .text of /    movs	r3, #0
+0x0c000f66  __acle_se_SECURE_dma_m2m_start + 114 in section .text of /    mov	r0, r3
+0x0c000f68  __acle_se_SECURE_dma_m2m_start + 116 in section .text of /    adds	r7, #24
+0x0c000f6a  __acle_se_SECURE_dma_m2m_start + 118 in section .text of /    mov	sp, r7
+0x0c000f6c  __acle_se_SECURE_dma_m2m_start + 120 in section .text of /    ldmia.w	sp!, {r7, lr}
+0x0c000f70  __acle_se_SECURE_dma_m2m_start + 124 in section .text of /    mov	r1, lr
+0x0c000f72  __acle_se_SECURE_dma_m2m_start + 126 in section .text of /    mov	r2, lr
+0x0c000f74  __acle_se_SECURE_dma_m2m_start + 128 in section .text of /    mov	r3, lr
+0x0c000f76  __acle_se_SECURE_dma_m2m_start + 130 in section .text of /    vmov.f32	s0, #112	@ 0x3f800000  1.0
+0x0c000f7a  __acle_se_SECURE_dma_m2m_start + 134 in section .text of /    vmov.f32	s1, #112	@ 0x3f800000  1.0
+0x0c000f7e  __acle_se_SECURE_dma_m2m_start + 138 in section .text of /    vmov.f32	s2, #112	@ 0x3f800000  1.0
+0x0c000f82  __acle_se_SECURE_dma_m2m_start + 142 in section .text of /    vmov.f32	s3, #112	@ 0x3f800000  1.0
+0x0c000f86  __acle_se_SECURE_dma_m2m_start + 146 in section .text of /    vmov.f32	s4, #112	@ 0x3f800000  1.0
+0x0c000f8a  __acle_se_SECURE_dma_m2m_start + 150 in section .text of /    vmov.f32	s5, #112	@ 0x3f800000  1.0
+0x0c000f8e  __acle_se_SECURE_dma_m2m_start + 154 in section .text of /    vmov.f32	s6, #112	@ 0x3f800000  1.0
+0x0c000f92  __acle_se_SECURE_dma_m2m_start + 158 in section .text of /    vmov.f32	s7, #112	@ 0x3f800000  1.0
+0x0c000f96  __acle_se_SECURE_dma_m2m_start + 162 in section .text of /    vmov.f32	s8, #112	@ 0x3f800000  1.0
+0x0c000f9a  __acle_se_SECURE_dma_m2m_start + 166 in section .text of /    vmov.f32	s9, #112	@ 0x3f800000  1.0
+0x0c000f9e  __acle_se_SECURE_dma_m2m_start + 170 in section .text of /    vmov.f32	s10, #112	@ 0x3f800000  1.0
+0x0c000fa2  __acle_se_SECURE_dma_m2m_start + 174 in section .text of /    vmov.f32	s11, #112	@ 0x3f800000  1.0
+0x0c000fa6  __acle_se_SECURE_dma_m2m_start + 178 in section .text of /    vmov.f32	s12, #112	@ 0x3f800000  1.0
+0x0c000faa  __acle_se_SECURE_dma_m2m_start + 182 in section .text of /    vmov.f32	s13, #112	@ 0x3f800000  1.0
+0x0c000fae  __acle_se_SECURE_dma_m2m_start + 186 in section .text of /    vmov.f32	s14, #112	@ 0x3f800000  1.0
+0x0c000fb2  __acle_se_SECURE_dma_m2m_start + 190 in section .text of /    vmov.f32	s15, #112	@ 0x3f800000  1.0
+0x0c000fb6  __acle_se_SECURE_dma_m2m_start + 194 in section .text of /    msr	CPSR_fs, lr
+0x0c000fba  __acle_se_SECURE_dma_m2m_start + 198 in section .text of /    push	{r4}
+0x0c000fbc  __acle_se_SECURE_dma_m2m_start + 200 in section .text of /    vmrs	r12, fpscr
+0x0c000fc0  __acle_se_SECURE_dma_m2m_start + 204 in section .text of /    movw	r4, #65376	@ 0xff60
+0x0c000fc4  __acle_se_SECURE_dma_m2m_start + 208 in section .text of /    movt	r4, #4095	@ 0xfff
+0x0c000fc8  __acle_se_SECURE_dma_m2m_start + 212 in section .text of /    and.w	r12, r12, r4
+0x0c000fcc  __acle_se_SECURE_dma_m2m_start + 216 in section .text of /    vmsr	fpscr, r12
+0x0c000fd0  __acle_se_SECURE_dma_m2m_start + 220 in section .text of /    pop	{r4}
+0x0c000fd2  __acle_se_SECURE_dma_m2m_start + 222 in section .text of /    mov	r12, lr
+0x0c000fd4  __acle_se_SECURE_dma_m2m_start + 224 in section .text of /    bxns	lr

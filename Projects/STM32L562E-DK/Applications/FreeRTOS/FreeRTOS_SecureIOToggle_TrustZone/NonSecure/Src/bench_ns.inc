@@ -54,6 +54,13 @@ typedef struct { volatile uint32_t magic, id, n; } bench_hdr_t;
 #define BENCH_ID_VERIFY_TABLE  8u   /* verify_table (VERIFY_CALIB 를 뺀다) */
 #define BENCH_ID_START_ASM    13u   /* 열: start_asm 전체, 내부(T4-T1). START 와 같은 방법 (9-12 는 ISR 벤치) */
 #define BENCH_ID_INNER_CALIB_ASM 14u /* start_asm 의 T1, T4 기록 비용 (movw/movt 형식) */
+#define BENCH_ID_NSC_ASM0     16u   /* BENCH_DECOMP: 빈 NSC (asm) */
+#define BENCH_ID_NSC_FPCLR    17u   /* BENCH_DECOMP: 빈 NSC (asm) + GCC FP 정리 */
+#define BENCH_ID_START_M1     18u   /* BENCH_DECOMP: asm + C 의 DMA 레지스터 작업 */
+#define BENCH_ID_START_M2     19u   /* BENCH_DECOMP: M1 + FP 정리 */
+#define BENCH_ID_CTX_V0       20u   /* BENCH_DECOMP: 전환, context 없음 + asm NSC */
+#define BENCH_ID_CTX_V1       21u   /* BENCH_DECOMP: 전환, context 있음 + asm NSC (Save/Load 만) */
+#define BENCH_ID_CTX_V2       22u   /* BENCH_DECOMP: 전환, context 있음 + C NSC (Save/Load + FP 프레임) */
 #define BENCH_ID_ALLOC        15u   /* BENCH_ALLOC 빌드: portALLOCATE_SECURE_CONTEXT 1회 (C 중재자 Task 의 1회 비용) */
 #define BENCH_ID_END           0xFFu
 
@@ -264,6 +271,101 @@ static void bench_alloc_main(void)
 }
 #endif /* BENCH_ALLOC */
 
+#if defined(BENCH_DECOMP) && MEDIATOR_ASM
+/* ---- 분해 실험과 문맥 전환 비용 (cmpAsmMediator.md §6, §7) ---- */
+extern int SECURE_bench_nsc_asm0(void *, void *, uint32_t);
+extern int SECURE_bench_nsc_asm_fpclr(void *, void *, uint32_t);
+extern int SECURE_bench_start_m1(void *, void *, uint32_t);
+extern int SECURE_bench_start_m2(void *, void *, uint32_t);
+BENCH_DEFINE_START_ONCE(bench_start_m1_once, SECURE_bench_start_m1)
+BENCH_DEFINE_START_ONCE(bench_start_m2_once, SECURE_bench_start_m2)
+
+/* 문맥 전환: 같은 우선순위의 두 Task 가 taskYIELD 로 번갈아 돈다. 구간 = 나가는 Task 의 t0 (yield 직전)
+ * ~ 들어오는 Task 의 t1 (yield 복귀 직후). SVC/PendSV, Secure Save/Load (있으면), FP 저장/복원 (있으면),
+ * 다음 Task 선택, MPU 영역 재설정이 들어간다. NSC 호출은 t0 앞에 있어 구간 밖이다.
+ *   mode 0: Secure context 없음, 매 회 asm 중재자 호출 (asm 중재자 Task 와 같은 상태)
+ *   mode 1: context 있음, asm 중재자 호출 (FPCA 가 서지 않음) -> mode 0 과의 차이 = Secure Save + Load NSC
+ *   mode 0/1 의 호출은 SECURE_dma_m2m_start_asm(NULL, NULL, 0): len = 0 이라 바로 거부되고 DMA 는 시작하지 않는다.
+ *   처음에는 SECURE_bench_nsc_asm0 (cpsid 없음) 을 썼는데, context 없는 Task 에서 그 함수 안으로 인터럽트가 들어오면
+ *   PSP_S = 0 에 프레임이 쌓여 멈췄다 [실측: PSP_S 0xFFFFFFE0, EXC_RETURN 0xFFFFFFFD, cmpAsmMediator.md §7]. 
+ *   mode 2: context 있음, C 빈 NSC (SECURE_nop3: vmov 로 FPCA = 1) -> C 중재자 Task 와 같은 상태
+ * 처음 4 표본(Task 첫 시작 포함)은 버린다 (예전 f262d8d^ 하니스와 같음). */
+typedef struct { volatile uint32_t valid, i, n, t0, done; } bench_cx_t;
+static bench_cx_t s_cx;
+static void bench_cx_task(void *p)
+{
+    uint32_t mode = (uint32_t)p;
+    if (mode != 0u) { portALLOCATE_SECURE_CONTEXT(configMINIMAL_SECURE_STACK_SIZE); }
+    for (;;)
+    {
+        uint32_t t1 = DWT->CYCCNT;
+        if (s_cx.valid && s_cx.i < s_cx.n)
+        {
+            if (s_cx.i >= 4u) { BENCH_ROW(s_cx.i - 4u)[0] = t1 - s_cx.t0; }
+            s_cx.i++;
+        }
+        if (s_cx.i >= s_cx.n) { s_cx.done++; vTaskSuspend(NULL); }
+        s_cx.valid = 1u;
+        if (mode == 2u) { (void)SECURE_nop3(NULL, NULL, 0); }
+        else            { (void)SECURE_dma_m2m_start_asm(NULL, NULL, 0); }
+        __DSB(); __ISB();
+        s_cx.t0 = DWT->CYCCNT;
+        taskYIELD();
+    }
+}
+
+static void bench_cx_run(uint32_t id, uint32_t mode)
+{
+    TaskHandle_t h0 = NULL, h1 = NULL;
+    s_cx.valid = 0u; s_cx.i = 0u; s_cx.n = BENCH_N + 4u; s_cx.done = 0u;
+    vTaskSuspendAll();   /* 하나가 생성 즉시 돌면 짝이 없으므로 둘 다 만든 뒤 시작 */
+    BaseType_t ok0 = xTaskCreate(bench_cx_task, "cx0", 256, (void *)mode, (tskIDLE_PRIORITY + 4) | portPRIVILEGE_BIT, &h0);
+    BaseType_t ok1 = xTaskCreate(bench_cx_task, "cx1", 256, (void *)mode, (tskIDLE_PRIORITY + 4) | portPRIVILEGE_BIT, &h1);
+    (void)xTaskResumeAll();
+    configASSERT(ok0 == pdPASS && ok1 == pdPASS);
+    configASSERT(s_cx.done == 2u);   /* 두 Task 가 모두 suspend 된 뒤에야 여기로 온다 */
+    bench_table_done(id);
+    vTaskDelete(h0); vTaskDelete(h1);
+    vTaskDelay(5);       /* IDLE 이 TCB 와 Secure context 를 해제 */
+}
+
+#define BENCH_LOOP_NSC(id, call) do {                                   \
+        (void)(call);                                                    \
+        for (i = 0; i < BENCH_N; i++)                                    \
+        { BENCH_MEASURE_NS(a, (void)(call)); BENCH_ROW(i)[0] = a; }      \
+        bench_table_done(id); } while (0)
+#define BENCH_LOOP_START(id, fn) do {                                   \
+        fn(dst, g, &a);                                                  \
+        for (i = 0; i < BENCH_N; i++)                                    \
+        { fn(dst, g, &a); BENCH_ROW(i)[0] = a; }                         \
+        bench_table_done(id); } while (0)
+
+static void bench_decomp_main(void)
+{
+    dma_task_globals_t *g = &s_dmaTaskMem[DMA_TASK_A].globals.v;
+    uint8_t *dst = s_dmaTaskMem[DMA_TASK_A].cluster.dst;
+    uint32_t i, a;
+
+    for (i = 0; i < BENCH_N; i++) { BENCH_MEASURE_NS(a, ;); BENCH_ROW(i)[0] = a; }
+    bench_table_done(BENCH_ID_NS_CALIB);
+
+    BENCH_LOOP_NSC(BENCH_ID_EMPTY_NSC,  SECURE_nop3(NULL, NULL, 0));
+    BENCH_LOOP_NSC(BENCH_ID_NSC_ASM0,   SECURE_bench_nsc_asm0(NULL, NULL, 0));
+    BENCH_LOOP_NSC(BENCH_ID_NSC_FPCLR,  SECURE_bench_nsc_asm_fpclr(NULL, NULL, 0));
+    BENCH_LOOP_START(BENCH_ID_START,     bench_start_once);
+    BENCH_LOOP_START(BENCH_ID_START_ASM, bench_start_asm_once);
+    BENCH_LOOP_START(BENCH_ID_START_M1,  bench_start_m1_once);
+    BENCH_LOOP_START(BENCH_ID_START_M2,  bench_start_m2_once);
+
+    bench_cx_run(BENCH_ID_CTX_V0, 0u);
+    bench_cx_run(BENCH_ID_CTX_V1, 1u);
+    bench_cx_run(BENCH_ID_CTX_V2, 2u);
+
+    bench_table_done(BENCH_ID_END);
+    for (;;) { vTaskDelay(pdMS_TO_TICKS(1000)); }
+}
+#endif /* BENCH_DECOMP */
+
 /* DMA_Task_A 가 호출하는 진입점 */
 static void Bench_Main(void)
 {
@@ -275,6 +377,9 @@ static void Bench_Main(void)
 
 #if defined(BENCH_ALLOC)
     bench_alloc_main();
+#endif
+#if defined(BENCH_DECOMP) && MEDIATOR_ASM
+    bench_decomp_main();
 #endif
 
 #if defined(BENCH_ISR_TS)

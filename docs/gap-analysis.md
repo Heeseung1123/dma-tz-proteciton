@@ -142,3 +142,7 @@ CH2 는 중재자와 가드 검사 없이 NS 가 직접 쓴다. 기본 빌드와
    FP 레지스터는 건드리지 않으므로 지우지 않는다.
 6. **판정은 기존과 같다.** src 미검증 (B-4), MRVALID 미검사 (A-3) 를 그대로 두었다.
 7. **`BENCH_TS` 훅.** T1 은 `cpsid` 직후, T4 는 EN 직후다. 이 함수를 부르는 NS bench 항목은 아직 없다.
+
+**H 보완 (2026-11-27, 보드 실측):** H-2 의 "알려진 구멍" 은 SG ~ `cpsid` 창에 그치지 않는다.
+마스킹 중 pending 된 인터럽트가 `cpsie` 뒤, `bxns` 전에 Secure 에서 받아들여져 PSP_S = 0 에 프레임이 쌓인다 [실측: PSP_S 0xFFFFFFE0, EXC_RETURN 0xFFFFFFFD / 원인 추정].
+context 없는 Task 의 문맥 전환 측정에서 1000 회 중 약 절반이 멈췄다. 상세와 해결 후보 A/B/D 는 cmpAsmMediator.md §8 에 있다. 사용자 결정 대기 중이다.
