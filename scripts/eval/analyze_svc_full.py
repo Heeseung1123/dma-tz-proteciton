@@ -25,6 +25,26 @@ for f, name in T:
     for c, k in COND:
         m = st.median(col(f'P2_{c}M_{k}_ts0', f)) - cal[(c, k)]; med[(f, c, k)] = m; out.append(f'{m:.0f}')
     print(f'| {name} | ' + ' | '.join(out) + ' |')
+# 테이블 방식: 다른 빌드 (results/table = 항목 7 최악, results/table_best = 항목 0 최선, BENCH_DECOMP 없음).
+# 같은 방법 (ts0 열0 - min(NS_CALIB)). 각 빌드의 C 중재자(START) 값을 배치 차이 확인용으로 같이 적는다.
+TB = os.path.join(os.path.dirname(R.rstrip('/')) or '.', '')
+EXT = [('table_best', 'start_table_total', '**테이블 최선 (항목 0)** †'), ('table', 'start_table_total', '**테이블 최악 (항목 7)** †'),
+       ('table_best', 'start_total', 'C 중재자, 테이블 최선 빌드 †'), ('table', 'start_total', 'C 중재자, 테이블 최악 빌드 †')]
+def ecol(ph, c, k, f): return [int(r[0]) for r in list(csv.reader(open(f'{TB}{ph}/P2_{c}M_{k}_ts0/{f}.csv')))[1:]]
+def evals(ph, c, k, f):
+    n = min(ecol(ph, c, k, 'ns_calib')); return [y - n for y in ecol(ph, c, k, f)]
+for ph, f, name in EXT:
+    out = []
+    for c, k in COND:
+        m = st.median(evals(ph, c, k, f)); med[(ph + ':' + f, c, k)] = m; out.append(f'{m:.0f}')
+    print(f'| {name} | ' + ' | '.join(out) + ' |')
+for key, name in [('table_best:start_table_total', 'SVC − 테이블 최선'), ('table:start_table_total', 'SVC − 테이블 최악')]:
+    print(f'| {name} | ' + ' | '.join(f"{med[('start_svc', c, k)] - med[(key, c, k)]:+.0f}" for c, k in COND) + ' |')
+print('| C 중재자: 이 빌드 − 테이블 빌드 (최선 / 최악) | ' + ' | '.join(
+    f"{med[('start_total', c, k)] - med[('table_best:start_total', c, k)]:+.0f} / {med[('start_total', c, k)] - med[('table:start_total', c, k)]:+.0f}"
+    for c, k in COND) + ' |')
+print('\n† 다른 빌드 (`results/table_best`, `results/table`: BENCH_PHASE=1 [BENCH_TBL_BEST], BENCH_DECOMP 없음). 같은 방법으로 집계.'
+      ' NS 배치가 달라, 마지막 줄 (같은 C 중재자의 빌드 간 차이) 만큼 배치 영향이 섞일 수 있다.')
 print('\n### 표 2. min / avg / max (같은 값들)\n')
 print('| 항목 | ' + ' | '.join(f'{c}/{k}' for c, k in COND) + ' |')
 print('|---|' + '---|' * len(COND))
@@ -33,6 +53,11 @@ for f, name in T:
     for c, k in COND:
         x = [y - cal[(c, k)] for y in col(f'P2_{c}M_{k}_ts0', f)]
         out.append(f'{min(x)} / {st.mean(x):.1f} / {max(x)}')
+    print(f'| {name} | ' + ' | '.join(out) + ' |')
+for ph, f, name in EXT[:2]:
+    out = []
+    for c, k in COND:
+        x = evals(ph, c, k, f); out.append(f'{min(x)} / {st.mean(x):.1f} / {max(x)}')
     print(f'| {name} | ' + ' | '.join(out) + ' |')
 
 print('\n### 표 3. 측정 구간 ICACHE hit / miss (BENCH_ICMON 진단 빌드, 사이클은 이 빌드 값)\n')
