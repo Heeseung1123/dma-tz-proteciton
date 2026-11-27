@@ -1,0 +1,8 @@
+variant=P2_110M_off_ts0 profile=P2 S=-O1 NS=-O1 defs=[ -DBENCH_PHASE=1]
+git=68e54f6d5fe578af2827ac07d70e6010ad2ebc23 dirty= M Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM33/secure/secure_context.c;
+arm-none-eabi-gcc (GNU Tools for STM32 14.3.rel1.20251027-0700) 14.3.1 20250623
+4c31c8046f66f1a6185d523ab01c482fdf0d10407fc10bd017c76892ff5f177d  FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf
+de4d457baa6c50b49b763923cb98311976c3af29a44cd1de9fe5a74180bff469  FreeRTOS_SecureIOToggle_TrustZone_Secure.elf
+   text	   data	    bss	    dec	    hex	filename
+  36024	  10240	  12624	  58888	   e608	results/mediator_asm/P2_110M_off_ts0/FreeRTOS_SecureIOToggle_TrustZone_NonSecure.elf
+   9512	     32	  11992	  21536	   5420	results/mediator_asm/P2_110M_off_ts0/FreeRTOS_SecureIOToggle_TrustZone_Secure.elf

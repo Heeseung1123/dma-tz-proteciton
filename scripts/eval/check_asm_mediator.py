@@ -64,11 +64,11 @@ TAMPER = {
     12: ('a-5 주소 오버플로 (len = 2^32-4)',   lambda r1, r2: (r1, 0xFFFFFFFC)),
     14: ('a-6 Secure 주소 (s_busy)',           lambda r1, r2: (S_BUSY, r2)),
 }
-log = {'enter': 0, 'ok': 0, 'rej': 0, 'doorbell': 0, 'busy_after': [], 'tamper': [], 'pending': None}
+log = {'in_call': False, 'dup': 0, 'enter': 0, 'ok': 0, 'rej': 0, 'doorbell': 0, 'busy_after': [], 'tamper': [], 'pending': None}
 
 class Enter(gdb.Breakpoint):
     def stop(self):
-        log['enter'] += 1; k = log['enter']
+        log['enter'] += 1; k = log['enter']; log['in_call'] = True
         if k in TAMPER:
             name, f = TAMPER[k]
             r1, r2 = f(reg('r1'), reg('r2'))
@@ -77,6 +77,11 @@ class Enter(gdb.Breakpoint):
         return False
 class Ret(gdb.Breakpoint):
     def stop(self):
+        # 같은 복귀 지점이 두 번 걸릴 수 있다: asm 중재자는 DMA 완료 IRQ 를 PRIMASK_S 로 복귀 직전까지 막으므로,
+        # gdb 가 이 중단점을 넘어가려고 single-step 할 때 그 IRQ 가 먼저 들어오고 같은 PC 로 돌아와 다시 걸린다.
+        if not log['in_call']:
+            log['dup'] += 1; return False
+        log['in_call'] = False
         r0 = reg('r0'); busy = rd(S_BUSY, 1)[0]
         if log['pending']:
             k, name, r1, r2 = log['pending']; log['pending'] = None
@@ -108,7 +113,7 @@ with open(d + '/func_check.txt', 'w') as f:
     w = lambda s: (f.write(s + '\n'), print(s))
     w('mediator = %s (veneer 0x%x, return sites %s)' % ('asm' if asm else 'C', VENEER, [hex(a) for a in RET]))
     w('pc after 3 s = %s / after +12 s = %s' % (pc0, pc1))
-    w('calls = %d (normal ok %d, normal reject %d), doorbell = %d' % (log['enter'], log['ok'], log['rej'], log['doorbell']))
+    w('calls = %d (normal ok %d, normal reject %d), doorbell = %d, duplicate return hits ignored = %d' % (log['enter'], log['ok'], log['rej'], log['doorbell'], log['dup']))
     w('s_busy right after each normal return = %s' % log['busy_after'])
     w('cluster A[0:8] = %s' % cl[0]); w('cluster B[0:8] = %s' % cl[1])
     w('Secure xFreeBytesRemaining = %s' % heap)
