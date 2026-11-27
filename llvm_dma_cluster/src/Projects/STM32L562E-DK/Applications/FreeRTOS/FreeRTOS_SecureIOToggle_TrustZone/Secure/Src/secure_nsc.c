@@ -154,7 +154,11 @@ static ns_callback_t s_ns_callback;
 #else
 static volatile uint32_t *s_ns_status;   /* NS word, checked once in SECURE_dma_m2m_init */
 #endif
+#if defined(DMA_MEDIATOR_PAD)
+volatile uint8_t s_busy;          /* llvm_dma_cluster: secure_dma_entry.S 가 ldrb/strb 로 참조 (static 해제) */
+#else
 static volatile uint8_t s_busy;
+#endif
 
 
 
@@ -297,6 +301,7 @@ int verify_inst(uint32_t addr, uint32_t len)
     );
 }
 
+#if !defined(DMA_MEDIATOR_PAD)   /* llvm_dma_cluster: DMA_MEDIATOR_PAD 면 secure_dma_entry.S 가 이 이름의 NSC 를 정의 */
 secureportNON_SECURE_CALLABLE
 int SECURE_dma_m2m_start(void *src_buf, void *dst_buf, uint32_t len)
 
@@ -318,6 +323,7 @@ int SECURE_dma_m2m_start(void *src_buf, void *dst_buf, uint32_t len)
 
     return 0;
 }
+#endif /* !DMA_MEDIATOR_PAD */
 
 #if MEDIATOR_ASM
 /*
@@ -369,7 +375,9 @@ _Static_assert(sizeof(s_busy) == 1u, "asm: s_busy is accessed with ldrb/strb");
 __attribute__((cmse_nonsecure_entry, naked, used))
 int SECURE_dma_m2m_start_asm(void *src_buf, void *dst_buf, uint32_t len)
 {
+#if !defined(__clang__)   /* llvm_dma_cluster: clang 은 naked 함수 안의 C 문장을 거부 (분석용 IR 빌드) */
     (void)src_buf; (void)dst_buf; (void)len;
+#endif
     __asm volatile (
         "cpsid  i                       \n"   /* PRIMASK_S: nothing stacks on PSP_S from here */
         MED_ASM_TS(g_benchT1)
@@ -438,7 +446,9 @@ int SECURE_dma_m2m_start_asm(void *src_buf, void *dst_buf, uint32_t len)
 __attribute__((cmse_nonsecure_entry, naked, used))
 int SECURE_dma_m2m_start_svc(void *src_buf, void *dst_buf, uint32_t len)
 {
+#if !defined(__clang__)   /* llvm_dma_cluster: clang 은 naked 함수 안의 C 문장을 거부 (분석용 IR 빌드) */
     (void)src_buf; (void)dst_buf; (void)len;
+#endif
     __asm volatile (
         "mrs    r3, ipsr                \n"
         "cbz    r3, 3f                  \n"   /* Thread mode 호출 거부 */

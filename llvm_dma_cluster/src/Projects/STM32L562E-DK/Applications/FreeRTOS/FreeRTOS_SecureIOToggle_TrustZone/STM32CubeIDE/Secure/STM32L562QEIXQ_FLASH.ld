@@ -49,6 +49,9 @@ MEMORY
   ROM_NSC	(rx)	: ORIGIN = 0x0C03E000,	LENGTH = 8K    /* Non-Secure Call-able region */
 }
 
+/* llvm_dma_cluster: guard 블록 MEMORY 영역 (pack_guards.py 생성물, -L build/secure/gen) */
+INCLUDE secure_guard_mem.ld
+
 /* Sections */
 SECTIONS
 {
@@ -151,6 +154,9 @@ SECTIONS
     *(.gnu.sgstubs*)   /* Secure Gateway stubs */
     . = ALIGN(8);
   } >ROM_NSC
+
+  /* llvm_dma_cluster: guard 블록에 둘 Secure .bss.<name> (.bss 규칙보다 앞, first match) + 0 초기화 표 */
+  INCLUDE secure_guard_sec.ld
 
   /* Uninitialized data section into "RAM" Ram type memory */
   . = ALIGN(8);

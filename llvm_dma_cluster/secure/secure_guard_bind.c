@@ -15,6 +15,7 @@
 extern const uint32_t __gbind_zero_table_start[];
 extern const uint32_t __gbind_zero_table_end[];
 
+#if GUARD_BIND_N > 0
 static int prvIsGuardBlock(const struct dma_manifest_entry *e, uint32_t n, uint32_t ns)
 {
     for (uint32_t i = 0; i < n; i++) {
@@ -29,6 +30,7 @@ static int prvIsGuardBlock(const struct dma_manifest_entry *e, uint32_t n, uint3
     }
     return 0;
 }
+#endif
 
 int guard_bind_init(const struct dma_manifest_entry *e, uint32_t n)
 {

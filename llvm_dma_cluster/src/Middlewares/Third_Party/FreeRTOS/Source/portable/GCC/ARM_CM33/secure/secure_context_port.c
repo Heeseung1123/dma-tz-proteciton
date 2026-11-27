@@ -32,6 +32,10 @@
 /* Secure port macros. */
 #include "secure_port_macros.h"
 
+#ifndef SECSTACK_STATIC
+    #define SECSTACK_STATIC    0   /* llvm_dma_cluster: 1 = landing pad (secure_context_patch.md) */
+#endif
+
 void SecureContext_LoadContextAsm( SecureContext_t * pxSecureContext ) __attribute__( ( naked ) );
 void SecureContext_SaveContextAsm( SecureContext_t * pxSecureContext ) __attribute__( ( naked ) );
 
@@ -51,13 +55,19 @@ void SecureContext_LoadContextAsm( SecureContext_t * pxSecureContext )
             " msr control, r3               \n" /* CONTROL = r3. */
         #endif /* configENABLE_MPU */
         "                                   \n"
+#if SECSTACK_STATIC
+        " mrs  r12, psp                     \n" /* llvm_dma_cluster §2: 쉼 PSP_S (pad top 또는 pad 위 정지 프레임) 보존 */
+        " movw r3, #:lower16:g_idle_psp     \n"
+        " movt r3, #:upper16:g_idle_psp     \n"
+        " str  r12, [r3]                    \n"
+#endif
         " msr psplim, r2                    \n" /* PSPLIM = r2. */
         " msr psp, r1                       \n" /* PSP = r1. */
         "                                   \n"
         " load_ctx_therad_mode:             \n"
         "    bx lr                          \n"
         "                                   \n"
-        ::: "r0", "r1", "r2"
+        ::: "r0", "r1", "r2", "r3", "r12", "memory"
     );
 }
 /*-----------------------------------------------------------*/
@@ -84,9 +94,23 @@ void SecureContext_SaveContextAsm( SecureContext_t * pxSecureContext )
         #endif /* configENABLE_MPU */
         "                                   \n"
         " str r1, [r0]                      \n" /* Save the top of stack in context. pxSecureContext->pucCurrentStackPointer = r1. */
+#if SECSTACK_STATIC
+        " movs r1, #0                       \n" /* llvm_dma_cluster §3: PSPLIM = 0 먼저 */
+        " msr  psplim, r1                   \n"
+        " movw r1, #:lower16:g_idle_psp     \n"
+        " movt r1, #:upper16:g_idle_psp     \n"
+        " ldr  r1, [r1]                     \n"
+        " msr  psp, r1                      \n" /* PSP = Load 에서 보존한 쉼 값 */
+        " movw r1, #:lower16:g_pad_top      \n" /* §4: PSPLIM = pad base */
+        " movt r1, #:upper16:g_pad_top      \n"
+        " ldr  r1, [r1]                     \n"
+        " sub  r1, r1, #248                 \n"
+        " msr  psplim, r1                   \n"
+#else
         " movs r1, %0                       \n" /* r1 = securecontextNO_STACK. */
         " msr psplim, r1                    \n" /* PSPLIM = securecontextNO_STACK. */
         " msr psp, r1                       \n" /* PSP = securecontextNO_STACK i.e. No stack for thread mode until next task's context is loaded. */
+#endif
         "                                   \n"
         " save_ctx_therad_mode:             \n"
         "    bx lr                          \n"

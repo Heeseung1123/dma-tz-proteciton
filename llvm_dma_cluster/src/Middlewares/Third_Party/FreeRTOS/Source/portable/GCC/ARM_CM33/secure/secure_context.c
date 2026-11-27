@@ -35,6 +35,18 @@
 /* Secure port macros. */
 #include "secure_port_macros.h"
 
+/* llvm_dma_cluster: 쉬는 동안의 PSPLIM 값 (stock = securecontextNO_STACK, landing pad = pad base) */
+#ifndef SECSTACK_STATIC
+    #define SECSTACK_STATIC    0
+#endif
+#if SECSTACK_STATIC
+    extern uint32_t g_pad_top;    /* secure_dma_boot.c */
+    extern uint32_t g_idle_psp;
+    #define securecontextIDLE_PSPLIM    ( ( uint8_t * ) ( g_pad_top - 248u ) )
+#else
+    #define securecontextIDLE_PSPLIM    securecontextNO_STACK
+#endif
+
 /**
  * @brief CONTROL value for privileged tasks.
  *
@@ -150,9 +162,16 @@ secureportNON_SECURE_CALLABLE void SecureContext_Init( void )
         /* Ensure to initialize secure contexts only once. */
         ulSecureContextsInitialized = 1;
 
+#if SECSTACK_STATIC
+        /* llvm_dma_cluster (secure_context_patch.md §1, §4): 쉬는 동안 PSP_S = landing pad top,
+         * PSPLIM_S = pad base. PSP 먼저, limit 나중. g_idle_psp/g_pad_top 은 dma_boot_config() 가 설정. */
+        secureportSET_PSP( g_idle_psp );
+        secureportSET_PSPLIM( g_pad_top - 248u );
+#else
         /* No stack for thread mode until a task's context is loaded. */
         secureportSET_PSPLIM( securecontextNO_STACK );
         secureportSET_PSP( securecontextNO_STACK );
+#endif
 
         /* Initialize all secure contexts. */
         for( i = 0; i < secureconfigMAX_SECURE_CONTEXTS; i++ )
@@ -206,7 +225,7 @@ secureportNON_SECURE_CALLABLE void SecureContext_Init( void )
      * when the processor is running in the Thread Mode.
      * Also do nothing, if a secure context us already loaded. PSPLIM is set to
      * securecontextNO_STACK when no secure context is loaded. */
-    if( ( ulIPSR != 0 ) && ( pucStackLimit == securecontextNO_STACK ) )
+    if( ( ulIPSR != 0 ) && ( pucStackLimit == securecontextIDLE_PSPLIM ) )
     {
         /* Obtain a free secure context. */
         ulSecureContextIndex = ulGetSecureContext( pvTaskHandle );
@@ -345,7 +364,7 @@ secureportNON_SECURE_CALLABLE void SecureContext_LoadContext( SecureContextHandl
 
         /* Ensure that no secure context is loaded and the task is loading it's
          * own context. */
-        if( ( pucStackLimit == securecontextNO_STACK ) &&
+        if( ( pucStackLimit == securecontextIDLE_PSPLIM ) &&
             ( xSecureContexts[ ulSecureContextIndex ].pvTaskHandle == pvTaskHandle ) )
         {
             SecureContext_LoadContextAsm( &( xSecureContexts[ ulSecureContextIndex ] ) );

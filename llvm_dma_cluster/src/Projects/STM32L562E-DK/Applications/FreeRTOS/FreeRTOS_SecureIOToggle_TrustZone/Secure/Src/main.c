@@ -54,12 +54,14 @@
 
 /* Private function prototypes -----------------------------------------------*/
 static void NonSecure_Init(void);
+volatile int g_dma_boot_status = 1;   /* llvm_dma_cluster: GDB 확인용 (0 = 성공) */
 static void MX_ICACHE_Init(void);
 static void MX_GTZC_S_Init(void);
 #if !defined(MEDIATOR_INSECURE)
 static void Secure_DMA_LockAllChannels(void);
 static void Secure_TZIC_Init(void);
-static void SMPU_SetupTaskRegions(void);
+static void SMPU_SetupTaskRegions(void) __attribute__((unused));   /* llvm_dma_cluster: dma_boot_config() 로 대체 */
+int dma_boot_config(void);                                         /* llvm_dma_cluster/secure/secure_dma_boot.c */
 #endif
 
 
@@ -165,7 +167,13 @@ int main(void)
   /*************** Setup and jump to non-secure *******************************/
 
 #if !defined(MEDIATOR_INSECURE)
-  SMPU_SetupTaskRegions();
+  /* llvm_dma_cluster: NS manifest → S-MPU 태그 + MPCBB guard + landing pad (+ guard 의 Secure 데이터 검증).
+   * 0 이 아니면 (manifest 오류, -7 = NS/Secure 이미지 불일치) NS 로 가지 않는다 (fail-closed). */
+  g_dma_boot_status = dma_boot_config();
+  if (g_dma_boot_status != 0)
+  {
+    Error_Handler();
+  }
 #endif
   NonSecure_Init();
 

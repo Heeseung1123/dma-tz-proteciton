@@ -37,3 +37,16 @@
   t.vDmaTaskA: s_dmaDstA(256), t.vDmaTaskB: s_dmaDstB(256) / errors 0, diagnostics 0. 1차·2차 JSON 동일.
 - `check_layout.py` OK: c0 [0x20018000,0x20018100) guard 0x20018100, c1 [0x20018200,…) guard 0x20018300, c2 [0x20018400,…) guard 0x20018500,
   manifest @0x08040400 count=3. `xDmaTaskAParams.xRegions` = {s_privA,0x60,RW} {0x20018000,0x100} {0x20018200,0x100} (ELF 에서 직접 읽음).
+| 17 | 3 | clang: naked 함수 안의 `(void)arg;` 를 거부 (`SECURE_dma_m2m_start_asm/_svc`), GCC 는 허용 | 사본 `secure_nsc.c` 에서 `#if !defined(__clang__)` (분석 IR 전용, GCC 산출물 불변) | ② 통과 |
+| 18 | 3 | 하네스 `secure_dma_entry.S` 가 `SECURE_dma_m2m_start` 와 `s_busy` 를 쓰는데 원본 `secure_nsc.c` 에 같은 이름의 C mediator 와 `static s_busy` | 사본에서 `-DDMA_MEDIATOR_PAD` 일 때 C mediator 제외, `s_busy` extern | veneer 의 `b.w` 가 .S 본문(`__acle_se_SECURE_dma_m2m_start` 0x0c000238)으로 감 |
+| 19 | 3 | `secure_guard_bind.c`: GUARD_BIND_N==0 이면 `prvIsGuardBlock` 미사용 경고 | `#if GUARD_BIND_N > 0` | 경고 0 (남은 RWX LOAD 경고는 baseline 과 동일) |
+
+### 3단계 결과 (Secure)
+- `secure_context.c/_port.c` 사본: secure_context_patch.md §1–§4 그대로 (`SECSTACK_STATIC=1`). 쉼 PSPLIM 검사도 `securecontextIDLE_PSPLIM`(= pad base)로.
+- `main.c` 사본: `SMPU_SetupTaskRegions()` → `g_dma_boot_status = dma_boot_config(); if (≠0) Error_Handler();`
+- 분석(②): 부팅 경로 함수 178 개. annotated 모드 → chosen 0. possible 7 개(pSecureErrorCallback, s_ns_status, g_tzic_sr3_at_arm,
+  secure_heap 의 pxEnd/xStart/xFreeBytesRemaining/xMinimumEverFreeBytesRemaining) — 모두 부팅 뒤 NSC/ISR 에서만 쓰임을 코드로 확인.
+  xSecureContexts 는 보수적으로 "부팅 경로" 판정(간접 호출 후보 때문) — 안전 쪽 오판.
+- 배치(③): guard 2 개(pad 제외: 0x30018300, 0x30018500), 사용 0.
+- Secure 최종(④): GCC 14.3, CubeIDE 와 같은 플래그(-O0), `--in-implib=⓪`. text 12808 / data 48 / bss 11992.
+- veneer(⑤): ⓪(= baseline `Secure/Debug/secure_nsclib.o`, baseline 오브젝트를 새로 링크한 것과 byte 동일) 과 16 개 심볼·주소 동일.
