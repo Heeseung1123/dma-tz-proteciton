@@ -68,7 +68,7 @@
 | 22 | 진단/`sites` 위치에 인라인 호출 체인 (`app_freertos.c:179 <- app_freertos.c:225`) — 래퍼가 per-TU -O2 에서 인라인되면 태스크 줄이 안 보였음 | 버퍼마다 태스크의 호출 줄이 나옴 |
 | 23 | `unresolved-load` 는 README 상 "annotate 로 보완" 인데 error 가 남아 STRICT 빌드가 항상 실패 → 그 태스크(또는 공유)에 annotate DMA 버퍼가 있으면 warning 으로 낮춤 (놓친 버퍼는 런타임 TTT/TTAT 가 거부 = fail-closed) | 단위 시험 |
 | 24 | `check_layout.py`: `{cluster start, cap}` NS-MPU region 쌍이 이미지 읽기 전용 데이터에 owner 수만큼 있는지 (dma_regions.h 미반영 탐지), cluster 미사용 바이트 보고 | 음성 시험 `stale_regions` |
-| 25 | `gen_layout.py`: cluster 별 bound → cap 표 출력 | 현재 미사용 192 B (공유 64 B cluster 의 256 B 올림), guard 768 B |
+| 25 | `gen_layout.py`: cluster 별 bound → cap 표 출력 | 당시 미사용 192 B (공유 64 B cluster 의 256 B 올림) → #34 에서 해소, guard 768 B |
 | 26 | `tests/pass/`: opt 단위 시험 13 항목 (void(ptr) 간접 호출 정밀도, Argument 역추적, 포인터 변수, heap/stack error, exclude_callers, annotate) | PASS |
 | 27 | (#28 에서 삭제) `secure/secure_dma_entry_min.S` (선택안, **기본 아님**): baseline `SECURE_dma_m2m_start_asm` 본문 + pad 검사 6 명령. `MEDIATOR_S=min` | 빌드·veneer 동일·check_pair 0 |
 
@@ -88,10 +88,16 @@
 남은 차이 1 개: NS `SVC_Handler` → NSC 분기가 GCC 는 veneer `ldr.w pc,[pc]` (1 명령), lld 는 thunk `movw/movt/bx r12` (3 명령).
 요청마다 1 회, ±1–2 cycle [추정] — 보드 측정(BOARD_TEST.md §7)으로 확인.
 
+## cluster 앞 빈 칸 채움 (2026-11-28, 사용자 요청: "c0 의 빈 공간에 다른 NS 데이터를 넣을 수 있게")
+| # | 내용 | 결과 |
+|---|---|---|
+| 34 | `gen_layout.py`: cluster 용량을 256 B → **32 B 단위**로, cluster 를 guard 쪽에 붙임(끝 = 256 B 경계 유지). 블록 안 cluster 앞 칸(`__dmac<i>_pre_start..start`)에 1차 링크 map 의 `.bss.<이름>` 객체를 FFD 로 배치 (`--fill-map`, 크기/정렬 우선 두 순서 중 나은 쪽), 2차 링크 `ASSERT` 로 크기 일치 확인, 앞 칸도 zero table 에 포함. `build_ns.sh`: `DMA_FILL=on|off`, `DMA_FILL_EXCLUDE` | c0 = [0x200180c0, 0x20018100) 64 B, 앞 칸 192/192 B = `s_privA`, `s_privB`. c1/c2 는 256 B 그대로(앞 칸 0). S-MPU RNR4 RBAR 0x200180c3, NS-MPU region {0x200180c0, 0x40} |
+| 35 | 안전성 근거: 앞 칸은 S-MPU 태그 밖 → mediator TTT 거부 [아키텍처 도출]. owner 의 DMA NS-MPU region 은 cluster 만 덮음. DMA 주소 증가 방향이라 cluster 넘침은 guard 에 먼저 닿음 [논문 §3]. 공격 시험 attack[2] (A 자신의 globals = 이제 c0 바로 앞 s_privA) 가 −1 이어야 함 (보드 확인 항목) | T6: on/off 두 빌드 배치 검사 PASS |
+
 ## 시험 요약 (마지막 실행: 처음부터 `rm -rf build && build_all.sh && tests/run_tests.sh`, SVC 경로)
 - 1단계 플러그인: OK (LLVM 18.1.8). 2단계 NS: OK (1/2차 JSON 동일, check_layout OK). 3단계 Secure: OK (veneer 16 개 동일, check_pair 0).
 - 4단계 보드: **실행 안 함** (D4). 절차·기대값: BOARD_TEST.md (SVC 경로 주소로 갱신).
-- 5단계 + 개선 시험: `tests/run_tests.sh` PASS 18 / FAIL 0.
+- 5단계 + 개선 시험: `tests/run_tests.sh` PASS 20 / FAIL 0.
 - GCC baseline: `./build.sh` 그대로 (프로젝트 원본 파일 변경 없음. 작업 전부터 있던 `secure_context.c` 공백 수정 1 줄은 건드리지 않음).
 
 ## 결정이 필요한 항목 (사용자)

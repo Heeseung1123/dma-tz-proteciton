@@ -101,5 +101,28 @@ if [ -n "$SB" ]; then
   done
 else echo "SKIP  GCC baseline Secure ELF 없음 (./build.sh 후 다시)"; fi
 
+echo "== T6 cluster 앞 빈 칸 채움 (DMA_FILL): 오른쪽 정렬 cluster + 앞 칸 NS 데이터"
+python3 - "$B/ns/ns.elf" <<'EOF2' && ok "fill: c0 = [0x200180c0,0x20018100), 앞 칸에 NS .bss (DMA 버퍼 아님), cluster 안은 DMA 버퍼만" || bad "fill: 배치 틀림"
+import sys
+from elftools.elf.elffile import ELFFile
+e = ELFFile(open(sys.argv[1], "rb"))
+S = {s.name: (s["st_value"], s["st_size"]) for s in e.get_section_by_name(".symtab").iter_symbols() if s.name}
+ps, pe, cs, ce = (S[f"__dmac0_{k}"][0] for k in ("pre_start", "pre_end", "start", "end"))
+assert (cs, ce) == (0x200180c0, 0x20018100), (hex(cs), hex(ce))
+inpre = sorted(n for n, (v, z) in S.items() if z and ps <= v < cs and not n.startswith("__"))
+incl = sorted(n for n, (v, z) in S.items() if z and cs <= v < ce and not n.startswith("__"))
+print("      앞 칸:", inpre, " cluster:", incl)
+assert inpre and pe - ps > 0 and "s_dmaShared" not in inpre and incl == ["s_dmaShared"]
+EOF2
+if DMA_FILL=off ns_build fill_off ""; then
+  python3 - "$B/t_fill_off/ns/ns.elf" <<'EOF2' && ok "fill off: 앞 칸 비움, cluster 위치 동일" || bad "fill off: 배치 틀림"
+import sys
+from elftools.elf.elffile import ELFFile
+e = ELFFile(open(sys.argv[1], "rb"))
+S = {s.name: s["st_value"] for s in e.get_section_by_name(".symtab").iter_symbols() if s.name}
+assert S["__dmac0_pre_end"] == S["__dmac0_pre_start"] == 0x20018000 and S["__dmac0_start"] == 0x200180c0
+EOF2
+else bad "fill off: 빌드 실패 (build/t_fill_off/ns.log)"; fi
+
 echo "== 결과: PASS $PASS / FAIL $FAILN"
 [ "$FAILN" -eq 0 ]

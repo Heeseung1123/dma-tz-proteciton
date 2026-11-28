@@ -4,7 +4,8 @@
 Mediator 는 프로젝트와 같은 SVC 경로다: 태스크 `svc #110` → NS `SVC_Handler` fast path (`dma_m2m_start_svc`
 레이블) → Handler mode 에서 `SECURE_dma_m2m_start_svc` (secure_nsc.c, asm). landing pad / Secure 스택 패치 없음.
 아래 주소·기대값은 그 빌드에서 읽은 값이다. 다시 빌드하면 `llvm-nm` 으로 바뀐 것이 없는지 먼저 확인한다
-(현재 값: c0 0x20018000 / c1 0x20018200 / c2 0x20018400, guard 각 +0x100).
+(현재 값: c0 0x200180c0–0x20018100 (앞 칸 0x20018000–0x200180c0 = s_privA, s_privB) / c1 0x20018200 / c2 0x20018400,
+guard 0x20018100 / 0x20018300 / 0x20018500).
 보드에 올리기 전: `python3 scripts/check_pair.py build/secure/secure.elf build/ns/ns.elf` → `예상 = 0`.
 
 ## 0. 올리기
@@ -33,7 +34,7 @@ while $i < 7
   printf "rnr %d: RBAR=%08x RLAR=%08x\n", $i, *(unsigned*)0xE000ED9C, *(unsigned*)0xE000EDA0
   set $i = $i + 1
 end
-# 기대: rnr 4: 20018003 200180e1 / rnr 5: 20018203 200182e1 / rnr 6: 20018403 200184e1
+# 기대: rnr 4: 200180c3 200180e1 / rnr 5: 20018203 200182e1 / rnr 6: 20018403 200184e1
 p/x *(unsigned*)0x50032D30     # MPCBB1 VCTR[12] = 0x0000002a (블록 385/387/389 = guard 3 개만 Secure)
 ```
 
@@ -52,7 +53,8 @@ LED10 은 Plain_Task 가 200 ms 마다 토글 (Secure context 를 가진 태스�
 ```gdb
 p s_privA.attack               # {0, -1, -1, -1, -1, -1}
 ```
-[0] 정상, [1] Task B cluster (TTAT: A 의 NS-MPU 에 없음), [2] A 자신의 globals (TTT: 태그 없음),
+[0] 정상, [1] Task B cluster (TTAT: A 의 NS-MPU 에 없음), [2] A 자신의 globals (TTT: 태그 없음. s_privA 는 c0 바로
+앞 칸 0x20018000 에 있으므로 "cluster 앞 칸은 DMA 대상이 아님" 도 함께 확인된다),
 [3] 길이 257 (끝이 guard), [4] 끝이 cluster 밖, [5] Secure 주소 0x30000000.
 
 ## 4. 전송 시점 guard (논문 §4 (b)) — 검증 통과 뒤 길이 변조

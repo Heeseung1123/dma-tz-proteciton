@@ -235,6 +235,15 @@ if (dma_boot_config() != 0) {
    - TTT 가 보는 S-MPU 태그는 manifest 로 자동 설정된다. DmaCluster pass 는 inline asm `svc #110` 도 sink 로 본다
      (`config/dma_config.json` 의 `{"svc": 110, "args": [1]}`, args = 레지스터 번호).
 
+### 5.2 cluster 앞 빈 칸에 NS 데이터 두기 (`DMA_FILL`, 기본 on)
+- cluster 는 guard 쪽으로 붙인다: 용량 = bound 를 **32 B** 로 올린 값 (S-MPU/NS-MPU 최소 단위), 끝 = 256 B 경계 = guard.
+- 256 B 블록 안에서 cluster 앞에 남는 칸은 S-MPU 태그 밖이고 owner 의 DMA NS-MPU region 에도 없다
+  → mediator 의 TTT 가 거부하므로 DMA 대상이 될 수 없다. DMA 주소는 증가 방향이라 전송 중 넘침도 guard 에 먼저 닿는다.
+- `gen_layout.py --fill-map ns_pass1.elf.map` 이 1차 링크 map 의 `.bss.<이름>` 객체를 그 칸에 FFD 로 넣는다
+  (크기 우선/정렬 우선 두 순서 중 더 많이 채우는 쪽). 생성 ld 의 `ASSERT` 가 2차 링크에서 같은 크기로 들어갔는지 확인한다.
+- 앞 칸은 `.dma_zero_table` 에 포함되어 startup 의 `dma_zero_clusters` 가 0 으로 지운다 (.bss 와 같은 의미).
+- 끄기: `DMA_FILL=off`. 특정 객체 제외: `DMA_FILL_EXCLUDE="이름 ..."`.
+
 ## 6. 빌드와 적용 순서
 
 ### 6.1 플러그인 빌드 + 단독 확인

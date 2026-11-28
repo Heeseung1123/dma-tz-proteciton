@@ -22,6 +22,8 @@ OUT=${OUT:-$TOOLS/build/ns}
 PLUGIN=${PLUGIN:-$TOOLS/build/pass/DmaCluster.so}
 IMPLIB=${IMPLIB:-$TOOLS/build/secure0/secure_nsclib.o} # ⓪ Secure 0차 빌드의 import library
 EXTRA_DEFS=${EXTRA_DEFS:-"-DDMA_ATTACK_TESTS"}
+# DMA_FILL=on(기본)|off : cluster 앞 빈 칸(256 B 블록 안, S-MPU 태그 밖)을 1차 링크의 .bss 객체로 채움
+# DMA_FILL_EXCLUDE="a b" : 채우지 않을 객체 이름
 
 # GCC 는 newlib / libgcc / crt 만 빌려 쓴다. build.sh 와 같은 ST 툴체인을 우선 사용.
 ST_GCC_BIN=/opt/st/stm32cubeide_2.2.0/plugins/com.st.stm32cube.ide.mcu.externaltools.gnu-tools-for-stm32.14.3.rel1.linux64_1.0.100.202602081740/tools/bin
@@ -125,7 +127,8 @@ cp "$LAYOUT" "$OUT/dma_layout.pass1.json"
 
 echo "== 3) 생성기"
 python3 "$TOOLS/gen/gen_layout.py" --layout "$OUT/dma_layout.pass1.json" --out-dir "$OUT/gen" \
-        --ram "$NS_RAM" --flash "$NS_FLASH" --max-tags 4 --max-task-regions 2 --guard-blocks 1
+        --ram "$NS_RAM" --flash "$NS_FLASH" --max-tags 4 --max-task-regions 2 --guard-blocks 1 \
+        $( [ "${DMA_FILL:-on}" = off ] || echo --fill-map "$OUT/ns_pass1.elf.map" ) ${DMA_FILL_EXCLUDE:+--fill-exclude $DMA_FILL_EXCLUDE}
 
 echo "== 4) dma_regions.h 사용 파일 재컴파일 + manifest"
 for r in $REGION_USERS; do

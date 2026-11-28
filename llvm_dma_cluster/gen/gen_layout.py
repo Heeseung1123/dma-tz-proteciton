@@ -3,21 +3,60 @@
 
 생성물 (--out-dir)
   dma_clusters.ld  : NS 링커 스크립트 SECTIONS 안에서 INCLUDE.
-                     cluster(ALIGN 256, 고정 용량) + 바로 뒤 MPCBB guard 256 B
+                     [앞 채움: 일반 NS .bss] + cluster(32 B 정렬, 끝 = 256 B 경계) + 바로 뒤 MPCBB guard 256 B
                      + NS startup 이 0 으로 지울 범위 표(.dma_zero_table, guard 제외)
+
+cluster 는 guard 쪽으로 붙인다(오른쪽 정렬): 용량 cap = bound 를 32 B 로 올린 값(S-MPU/NS-MPU 최소 단위).
+256 B 블록 안에서 cluster 앞에 남는 칸(pre)은 S-MPU 태그도 owner 의 DMA NS-MPU region 도 아니므로
+mediator 가 DMA 대상으로 받지 않는다(TTT 실패). 그래서 아무 NS 데이터나 둘 수 있다.
+--fill-map 을 주면 1차 링크 map 의 .bss.<이름> 입력 섹션을 큰 것부터(First-Fit Decreasing) 그 칸에 넣는다.
   dma_manifest.c   : Secure boot 가 읽는 manifest (링커 심볼 참조 → 주소는 링커가 채움)
   dma_regions.h    : 태스크별 NS-MPU region 초기화 매크로 (xTaskCreateRestricted 용)
   layout_final.json: 생성에 사용한 입력 사본 (2차 링크가 dma_layout.json 을 덮어쓰므로)
 """
 import argparse
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
 
+# lld map: "VMA LMA Size Align <obj>:(<input section>)" (16 진)
+MAP_IN = re.compile(r"^\s*[0-9a-f]+\s+[0-9a-f]+\s+([0-9a-f]+)\s+(\d+)\s+\S+:\((\.bss\.[^)\s]+)\)\s*$")
+
 
 def align_up(x: int, a: int) -> int:
     return (x + a - 1) // a * a
+
+
+def bss_candidates(map_path: str, exclude: set[str]) -> list[tuple[str, int, int]]:
+    """1차 링크 map 에서 (.bss.<이름>, size, align). 크기 0, 제외 목록, .dma.* 는 빼고 이름 순."""
+    seen = {}
+    for line in Path(map_path).read_text().splitlines():
+        m = MAP_IN.match(line)
+        if m:
+            size, align, sec = int(m.group(1), 16), int(m.group(2)), m.group(3)
+            if size and sec[len(".bss."):] not in exclude and not re.search(r"[*?\[\]]", sec):
+                seen[sec] = (size, align)
+    return sorted((s, z, al) for s, (z, al) in seen.items())
+
+
+def fill(cands, room: int, used: set[str]):
+    """room 바이트 칸에 First-Fit Decreasing. 정렬 패딩은 칸 시작(256 B 경계)부터 순서대로 계산.
+    순서 두 가지(크기 우선 / 정렬 우선)를 해 보고 객체 바이트가 많은 쪽 → (고른 섹션, 칸에서 쓴 바이트)"""
+    free = [x for x in cands if x[0] not in used]
+    best = ([], 0, 0)
+    for key in (lambda x: (-x[1], -x[2], x[0]), lambda x: (-x[2], -x[1], x[0])):
+        pos, data, picked = 0, 0, []
+        for sec, size, align in sorted(free, key=key):
+            at = align_up(pos, max(align, 1))
+            if at + size <= room:
+                picked.append(sec)
+                pos, data = at + size, data + size
+        if data > best[2]:
+            best = (picked, pos, data)
+    used.update(best[0])
+    return best[0], best[1]
 
 
 def main() -> int:
@@ -32,6 +71,8 @@ def main() -> int:
                     help="태스크당 NS-MPU configurable region 수 (portNUM_CONFIGURABLE_REGIONS)")
     ap.add_argument("--guard-blocks", type=int, default=1,
                     help="cluster 뒤 MPCBB guard 블록 수 (atomic/stackless mediator 에서는 1)")
+    ap.add_argument("--fill-map", help="1차 링크 map: cluster 앞 빈 칸을 이 map 의 .bss 객체로 채운다")
+    ap.add_argument("--fill-exclude", nargs="*", default=[], help="채우지 않을 객체 이름")
     ap.add_argument("--allow-errors", action="store_true")
     a = ap.parse_args()
 
@@ -59,14 +100,26 @@ def main() -> int:
     mani_ext, mani_ent = [], []
     regions_by_task: dict[str, list[str]] = {}
     reg_defs = []
+    cands = bss_candidates(a.fill_map, set(a.fill_exclude)) if a.fill_map else []
+    used: set[str] = set()
+    report = []
 
     for i, c in enumerate(clusters):
-        cap = align_up(max(int(c["bytes_bound"]), 1), 256)   # 끝이 256 경계 → guard 정렬
+        cap = align_up(max(int(c["bytes_bound"]), 1), 32)    # S-MPU / NS-MPU 32 B 단위
+        span = align_up(cap, 256)                             # cluster 끝 = 256 B 경계 = guard
+        pre = span - cap                                      # cluster 앞 빈 칸 (DMA 불가 영역)
+        picked, pre_used = fill(cands, pre, used) if pre else ([], 0)
+        report.append((i, c, cap, pre, picked, pre_used))
         s = f"__dmac{i}"
         ld += [
-            f"/* c{i}: {c['id']}  owners={','.join(c['owners'])}  bound={c['bytes_bound']} B */",
+            f"/* c{i}: {c['id']}  owners={','.join(c['owners'])}  bound={c['bytes_bound']} B"
+            f"  → pre {pre:#x} (NS 데이터 {pre_used} B) + cluster {cap:#x} + guard */",
             f".dma_c{i} (NOLOAD) : ALIGN(256)",
             "{",
+            f"  {s}_pre_start = .;           /* S-MPU 태그 밖: 일반 NS 데이터 (DMA 대상 아님) */",
+            *[f"  *({sec})" for sec in picked],
+            f"  {s}_pre_end = .;",
+            f"  . = {s}_pre_start + {pre:#x};",
             f"  {s}_start = .;",
             f"  KEEP(*({c['section']}))",
             f"  {s}_fill = .;",
@@ -76,11 +129,13 @@ def main() -> int:
             f"  {s}_guard_end = .;",
             f"}} > {a.ram}",
             f'ASSERT({s}_fill <= {s}_end, "dma cluster c{i} overflow")',
+            f'ASSERT({s}_pre_end - {s}_pre_start == {pre_used:#x}, '
+            f'"dma cluster c{i}: pre-fill 가 1차 링크와 다름 (객체 크기/이름 변경)")',
             f'ASSERT(({s}_start % 32) == 0, "dma cluster c{i}: S-MPU base not 32B aligned")',
             f'ASSERT(({s}_end % 256) == 0, "dma cluster c{i}: guard not 256B aligned")',
             "",
         ]
-        zero.append(f"    LONG({s}_start) LONG({s}_end)")
+        zero.append(f"    LONG({s}_pre_start) LONG({s}_end)")   # pre 의 .bss 도 0 초기화
         kind = "DMA_KIND_SHARED" if c["kind"] == "shared" else "DMA_KIND_TASK"
         mani_ext.append(f"extern uint8_t {s}_start[], {s}_end[];")
         mani_ent.append(f"    {{ {i}u, {kind}, {s}_start, {s}_end, {a.guard_blocks}u }},")
@@ -136,10 +191,12 @@ def main() -> int:
     (out / "dma_regions.h").write_text("\n".join(hdr))
 
     shutil.copyfile(a.layout, out / "layout_final.json")
-    for i, c in enumerate(clusters):
-        cap = align_up(max(int(c["bytes_bound"]), 1), 256)
+    for i, c, cap, pre, picked, pre_used in report:
         print(f"[gen] c{i} {c['id']:20s} owners={','.join(c['owners']):24s} "
-              f"bound {c['bytes_bound']:5d} B → cap {cap:5d} B (+guard 256)", file=sys.stderr)
+              f"bound {c['bytes_bound']:5d} B → cap {cap:5d} B (+guard 256), 앞 칸 {pre:3d} B", file=sys.stderr)
+        if picked:
+            names = ", ".join(x[len(".bss."):] for x in picked)
+            print(f"[gen]    앞 칸 NS 데이터 {pre_used}/{pre} B: {names}", file=sys.stderr)
     print(f"[gen] cluster {len(clusters)} 개 생성 → {out}")
     return 0
 
