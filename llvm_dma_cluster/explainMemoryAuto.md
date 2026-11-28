@@ -334,3 +334,166 @@ mediator 는 요청 주소의 양 끝을 두 번 검사합니다.
 - guard 에 닿으면 TZIC 인터럽트가 나고 `GTZC_IRQHandler` 가 채널을 멈춥니다.
 
 **막지 않는 것이 하나 있습니다.** B 가 `s_dmaDstB` 에서 넘치면 guard 가 아니라 `s_dmaShared` 로 들어갑니다. B 는 원래 공유 버퍼에 쓸 권한이 있으므로 권한 밖 쓰기는 아닙니다. 공유 버퍼에 guard 를 따로 두지 않기로 한 데 따른 대가입니다.
+
+---
+
+## 8. TZIC 로그: guard 블록 안에 둔 Secure 객체 (D11)
+
+### 8.1 왜 guard 안에 두나
+guard 블록(256 B × 2)은 MPCBB 로 Secure 가 된 블록입니다. 주소는 NS SRAM 범위 안에 있습니다.
+- **NS 데이터는 둘 수 없습니다.** NS CPU 접근은 막히고, NS DMA 쓰기는 무시되며, 읽으면 0 이 나옵니다 [실측].
+- **Secure 데이터는 둘 수 있습니다.** Secure CPU 는 Secure alias(`0x3001xxxx`)로 정상 접근합니다.
+- 그래서 비어 있던 guard 512 B 를 Secure 의 TZIC 로그 저장소로 다시 씁니다. 로그 때문에 늘어나는 Secure RAM 은 0 B 입니다.
+- 덤으로, 로그가 NS 에게 보이지 않고 NS 가 바꿀 수도 없습니다. 로그 자체가 guard 와 같은 하드웨어 보호를 받습니다.
+
+### 8.2 로그 구조 (`secure_nsc.c` 사본)
+```c
+typedef struct {                 /* 이벤트 1 건 = 28 B */
+    uint32_t seq;      /* 전체 이벤트 번호 (= g_tzic_sum.total) */
+    uint32_t dir;      /* 1 = 쓰기 (dst 쪽이 guard 에 닿음), 2 = 읽기 (src 쪽) */
+    uint32_t sr3;      /* 진입 시 TZIC SR3 (bit4 SRAM1F) */
+    uint32_t ccr;      /* 진입 시 DMA CCR (EN = 1 이었음) */
+    uint32_t cndtr;    /* 멈춘 시점에 남은 전송 수 */
+    uint32_t cpar;     /* src 시작 주소 */
+    uint32_t cmar;     /* dst 시작 주소 (CM0AR) */
+} tzic_event_t;
+
+typedef struct {                 /* guard 1 개의 로그 = 4 + 4 × 28 = 116 B */
+    uint32_t     count;          /* 이 guard 에서 난 위반 수. 최근 것 = ev[(count-1) % 4] */
+    tzic_event_t ev[4];          /* 최근 4 건 (ring) */
+} tzic_guard_log_t;
+
+typedef struct { uint32_t total, other; } tzic_summary_t;   /* 8 B */
+
+GUARD_OBJ("guard")   tzic_summary_t   g_tzic_sum;    /* 아무 guard 에나 */
+GUARD_OBJ("guard:0") tzic_guard_log_t g_tzic_log0;   /* guard 0 (= Task A cluster 뒤) 에 고정 */
+GUARD_OBJ("guard:1") tzic_guard_log_t g_tzic_log1;   /* guard 1 (= Task B cluster 뒤) 에 고정 */
+```
+`GUARD_OBJ(tag)` 는 clang 분석 빌드에서만 `__attribute__((annotate(tag)))` 가 됩니다. GCC 최종 빌드에서는 빈 매크로이고, 배치는 생성된 링커 스크립트가 합니다.
+로그 개수(`TZIC_LOG_GUARDS` = 2)는 빌드 스크립트가 `ns.elf` 의 cluster 수에서 정해 `-D` 로 넘깁니다.
+
+### 8.3 guard 블록 안의 실제 배치 (secure.elf 실측)
+```
+ guard A: NS 주소 0x20018200 = Secure alias 0x30018200           (Task A cluster 바로 뒤)
+ 0x30018200 ┌───────────────────────────────────────────┐
+            │ g_tzic_log0.count                     4 B │
+ 0x30018204 ├───────────────────────────────────────────┤
+            │ ev[0] {seq dir sr3 ccr cndtr cpar cmar} 28│
+ 0x30018220 │ ev[1]                                  28 │
+ 0x3001823c │ ev[2]                                  28 │
+ 0x30018258 │ ev[3]                                  28 │
+ 0x30018274 ├───────────────────────────────────────────┤
+            │ g_tzic_sum {total, other}              8 B │
+ 0x3001827c ├───────────────────────────────────────────┤
+            │ (비어 있음 132 B)                          │
+ 0x30018300 └───────────────────────────────────────────┘
+
+ guard B: NS 주소 0x20018500 = Secure alias 0x30018500           (Task B cluster 끝, 공유 버퍼 바로 뒤)
+ 0x30018500 ┌───────────────────────────────────────────┐
+            │ g_tzic_log1 (같은 구조)              116 B │
+ 0x30018574 ├───────────────────────────────────────────┤
+            │ (비어 있음 140 B)                          │
+ 0x30018600 └───────────────────────────────────────────┘
+```
+
+### 8.4 빌드에서 guard 에 고정되기까지
+```
+ secure_nsc.c                       SecureGuardSelect pass              pack_guards.py
+ annotate("guard:0") g_tzic_log0 ─► secure_guard_candidates.json  ─►  pin 객체 먼저 고정:
+ annotate("guard:1") g_tzic_log1    "chosen": [                        guard 0 ← g_tzic_log0
+ annotate("guard")   g_tzic_sum       {g_tzic_log0, pin 0, 116 B},     guard 1 ← g_tzic_log1
+                                      {g_tzic_log1, pin 1, 116 B},    나머지는 큰 것부터 First-Fit:
+  (부팅 경로에서 쓰는지 검사:          {g_tzic_sum,  pin -1, 8 B} ]     guard 0 ← g_tzic_sum
+   GTZC_IRQHandler 는 부팅 뒤에만                                        │
+   켜지므로 통과)                                                       ▼
+                       ┌───────────────────────────────────────────────────────────────┐
+                       │ secure_guard_mem.ld   MEMORY { GUARD0 : ORIGIN = 0x30018200,  │
+                       │                                GUARD1 : ORIGIN = 0x30018500 } │
+                       │ secure_guard_sec.ld   .gbind0 : { *(.bss.g_tzic_log0)         │
+                       │                                   *(.bss.g_tzic_sum) } > GUARD0│
+                       │                       .gbind1 : { *(.bss.g_tzic_log1) } > GUARD1│
+                       │                       .gbind_zero_table : 두 구간 (0 초기화용) │
+                       │ guard_bind.h          k_guard_bind_ns = { 0x20018200, 0x20018500 }│
+                       └───────────────────────────────────────────────────────────────┘
+                                                       │  GCC 최종 링크 (Secure)
+                                                       ▼
+                                                  secure.elf
+```
+pin 번호 k 는 `ns.elf` 의 guard 순서(cluster 0 의 guard, cluster 1 의 guard …)입니다. 지금은 cluster 마다 guard 가 1 블록이라 k = cluster 번호 = S-MPU 태그 RNR(4+k) 입니다. cluster 에 guard 가 2 블록 이상이면 빌드 스크립트가 멈춥니다.
+
+### 8.5 부팅 순서: 언제부터 로그를 쓸 수 있나
+```
+ Secure main
+   ├─ MX_GTZC_S_Init      : guard 자리도 아직 NS 블록  ← 이때 쓰면 로그가 NS 메모리에 남음 (금지)
+   ├─ dma_boot_config()
+   │    ├─ manifest 검증, S-MPU 태그 RNR4/5
+   │    ├─ MPCBB: guard 블록 2 개 → Secure
+   │    └─ guard_bind_init(): k_guard_bind_ns 가 manifest 의 guard 와 같은지 확인 (다르면 −7, 정지)
+   │                          → .gbind_zero_table 구간 (로그 전체) 을 0 으로
+   ├─ NS 시작 … NS 의 SECURE_dma_m2m_init()
+   │    └─ TZIC IER3.SRAM1IE 켬  ← 여기서부터 GTZC_IRQHandler 가 돈다 = 로그를 쓰기 시작
+```
+SecureGuardSelect pass 는 "부팅 경로에서 쓰는 변수는 guard 에 두지 않는다" 를 검사합니다. 이 순서가 그 검사의 근거입니다. `GTZC_IRQHandler` 는 설정 `post_boot_handlers` 로 부팅 경로에서 뺐습니다.
+
+### 8.6 위반 하나가 기록되는 과정 (`GTZC_IRQHandler`)
+```
+ NS DMA 가 guard 블록에 접근 → MPCBB 가 막음 (쓰기 무시 / 읽기 0) → TZIC SR3.SRAM1F → GTZC_IRQHandler (우선순위 0)
+   ① ccr = CCR;  CCR.EN = 0            채널을 즉시 정지
+   ② sr3 = SR3;  FCR3 로 SRAM1F 지움
+   ③ g_tzic_sum.total++
+   ④ 진입 시 EN = 1 이었나?
+        아니오 → g_tzic_sum.other++      (DMA 와 무관: guard 를 특정할 수 없음)
+        예     → prvTzicLog(): 어느 guard 인지 고르고 g_tzic_log<k> 에 1 건 기록
+   ⑤ 복구 (D8): CGIF1 지움, s_busy = 0, NS status word = 2, doorbell → NS 태스크가 −2 를 받음
+```
+로그를 ⑤보다 먼저 쓰므로, NS 태스크가 깨어날 때는 기록이 이미 끝나 있습니다.
+
+### 8.7 "어느 guard 인가" 를 고르는 방법 (`prvTzicLog`)
+TZIC 는 **위반 주소를 주지 않습니다.** SR3 에는 "SRAM1 에서 위반이 있었다"는 플래그만 있습니다 (RM0438 GTZC 장, 절 번호 미확인). 그래서 다음 두 가지 사실로 추정합니다 [아키텍처 도출].
+1. **guard 위치는 S-MPU 에 있습니다.** guard k 는 태그 region RNR(4+k) 의 끝 바로 뒤이므로, `guard_k = (RLAR | 0x1F) + 1` 입니다. Secure 전용 레지스터라 manifest 를 다시 읽을 필요도 없습니다.
+2. **DMA 주소는 증가만 합니다.** 시작 주소 x 에서 위로 올라가다 가장 먼저 닿는 guard 가 범인입니다. x 가 이미 guard 안에 있으면 거리는 0 입니다.
+
+```
+ 거리(x, guard) = guard 시작 − x   (x 가 guard 보다 아래)
+                = 0                (x 가 guard 안)
+                = ∞                (x 가 guard 위: 닿을 수 없음)
+
+ 후보 = { CM0AR(dst) → 쓰기, CPAR(src) → 읽기 } × { guard 0, guard 1 }
+ 거리가 가장 짧은 (주소, guard) 쌍 → 그 guard 의 로그에, 그 방향(dir) 으로 기록
+```
+
+보드에서 실제로 기록된 세 건으로 확인합니다 [실측].
+```
+ (1) 쓰기 guard A 시험: CPAR = 0x08040000 (NS flash), CM0AR = 0x20018100, CNDTR 528 로 변조
+                         guard 0 = 0x20018200, guard 1 = 0x20018500
+     CM0AR → guard 0 : 0x100   ← 최소
+     CM0AR → guard 1 : 0x400
+     CPAR  → guard 0 : 0x17FD8200 (flash 는 SRAM 보다 아래라 멀다)
+     ⇒ g_tzic_log0.ev[0] = { dir 1 (쓰기), cmar 0x20018100, cpar 0x08040000, cndtr 0x10c }
+        남은 0x10c = 268 → 528 − 268 = 260 B 전송 = cluster 256 + guard 4 B 에서 멈춤
+
+ (2) 읽기 guard A 시험: CPAR = 0x20018200 (guard A 자체), CM0AR = 0x20018100, CNDTR 16
+     CPAR  → guard 0 : 0       ← 최소 (src 가 guard 안)
+     CM0AR → guard 0 : 0x100
+     ⇒ g_tzic_log0 = { dir 2 (읽기), cpar 0x20018200, cmar 0x20018100, cndtr 6 }
+
+ (3) 공유 버퍼 → guard B 시험: CM0AR = 0x200184c0 (s_dmaShared), CNDTR 336
+     CM0AR → guard 0 : ∞ (이미 지남)
+     CM0AR → guard 1 : 0x40    ← 최소
+     ⇒ g_tzic_log1.ev[0] = { dir 1, cmar 0x200184c0, cndtr 0x10c }  (68 B = 공유 64 + guard 4)
+```
+
+**한계** [추정]
+- 두 방향이 같은 속도로 주소를 올린다고 가정합니다 (M2M, src 와 dst 의 전송 폭이 같음).
+- 전송 폭이 다르거나 src 와 dst 가 서로 다른 guard 에 거의 같은 거리로 있으면 잘못 고를 수 있습니다.
+- DMA 가 멈춰 있을 때의 TZIC 는 `other` 개수로만 셉니다. 예를 들어 NS CPU 의 접근이나 디버거 접근이 여기에 해당합니다.
+
+### 8.8 GDB 로 보기
+```gdb
+p/x g_tzic_sum                 # {total, other}
+p/x g_tzic_log0                # guard A: count, ev[0..3]
+p/x g_tzic_log1                # guard B
+x/29wx 0x30018200              # 같은 내용을 Secure alias 로 직접 (log0 116 B = 29 word)
+```
+`tests/board/s1_3`, `s4_5`, `s4b`, `s4c` 스크립트가 각 시험 끝에 위 세 줄을 출력합니다.
+NS 에서 멈춘 상태로 `0x3001xxxx` 를 읽고 실행을 재개하면 `other` 가 1 늘 수 있습니다 [추정, VERIFY_LOG D11].
