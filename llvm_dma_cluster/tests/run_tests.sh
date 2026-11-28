@@ -141,5 +141,24 @@ if DMA_FILL=off ns_build fill_off ""; then
   fill_check "$B/t_fill_off/ns/ns.elf" off && ok "fill off: 앞 칸 비움, cluster 위치 동일" || bad "fill off: 배치 틀림"
 else bad "fill off: 빌드 실패 (build/t_fill_off/ns.log)"; fi
 
+echo "== T7 TZIC 로그: g_tzic_log<k> 가 guard k 블록 (Secure alias) 에, Secure RAM 밖"
+python3 - "$B/secure/secure.elf" "$B/ns/ns.elf" <<'EOF2' && ok "tzic log: log0 → guard A, log1 → guard B, sum → guard, .bss 밖" || bad "tzic log: 배치 틀림"
+import sys
+from elftools.elf.elffile import ELFFile
+def syms(f): return {s.name: (s["st_value"], s["st_size"]) for s in ELFFile(open(f, "rb")).get_section_by_name(".symtab").iter_symbols() if s.name}
+S, N = syms(sys.argv[1]), syms(sys.argv[2])
+k = 0
+while f"__dmac{k}_end" in N:
+    g = N[f"__dmac{k}_end"][0] + 0x10000000
+    a, z = S[f"g_tzic_log{k}"]
+    assert g <= a and a + z <= g + 256, (k, hex(a), hex(g))
+    print(f"      g_tzic_log{k} @ {a:#x} (guard {g:#x}) {z} B")
+    k += 1
+assert k == 2 and f"g_tzic_log{k}" not in S
+guards = [N[f"__dmac{i}_end"][0] + 0x10000000 for i in range(k)]
+a = S["g_tzic_sum"][0]
+assert any(g <= a < g + 256 for g in guards), hex(a)
+EOF2
+
 echo "== 결과: PASS $PASS / FAIL $FAILN"
 [ "$FAILN" -eq 0 ]

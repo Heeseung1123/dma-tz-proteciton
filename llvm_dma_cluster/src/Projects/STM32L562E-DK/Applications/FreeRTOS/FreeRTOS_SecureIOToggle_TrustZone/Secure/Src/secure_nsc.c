@@ -639,6 +639,119 @@ void DMA1_Channel1_IRQHandler(void)
     ISR_TS(2);   /* Tb: right before bx lr (EXC_RETURN) */
 }
 
+/* ---- TZIC 로그: guard 블록 안에 둔 Secure 객체 (llvm_dma_cluster D11) ----
+ * guard 블록은 NS 주소 범위의 MPCBB Secure 256 B 블록이라 NS 데이터는 못 두지만 Secure 데이터는 둘 수 있다.
+ * guard 마다 로그 객체 하나 (g_tzic_log<k> → guard k 에 고정: annotate("guard:<k>"), pack_guards.py 가 배치,
+ * secure_guard_bind.c 가 부팅 때 주소 확인 + 0 초기화). 요약 g_tzic_sum 은 아무 guard 에 (annotate("guard")).
+ *  - guard 개수 TZIC_LOG_GUARDS 는 빌드 스크립트가 NS 이미지(ns.elf)에서 세어 -D 로 준다 (secure_common.sh).
+ *  - 부팅 경로에서 쓰지 않는다: GTZC_IRQHandler 는 SECURE_dma_m2m_init 이후에만 켜진다 (secure_guard_config.json
+ *    post_boot_handlers). guard 가 Secure 가 되기 전 NS 메모리일 때 쓰면 유출이므로 이 조건이 필수다.
+ *  - NS DMA 가 guard 에 쓰면 무시, 읽으면 0 (RAZ) [실측 2026-11-28] → 로그는 NS 가 바꾸거나 읽을 수 없다.
+ *  - 어느 guard 인가: TZIC 는 위반 주소를 주지 않는다 (SR3 는 SRAM1F 플래그만; RM0438 GTZC 장, 절 번호 미확인).
+ *    그래서 S-MPU 태그 region (RNR4..) 의 RLAR 로 guard 위치(= 태그 끝)를 읽고, DMA 의 CMAR(쓰기)/CPAR(읽기)
+ *    시작 주소에서 증가 방향으로 가장 먼저 닿는 guard 를 고른다 (주소 증가 방향 DMA 라서) [아키텍처 도출].
+ *    두 방향 중 거리가 짧은 쪽이 먼저 닿은 쪽이다 (M2M, 같은 전송 폭 가정 [추정]). */
+#if defined(__clang__)
+#define GUARD_OBJ(tag)  __attribute__((annotate(tag)))   /* SecureGuardSelect pass 가 읽는다 (분석용 clang 빌드) */
+#else
+#define GUARD_OBJ(tag)                                     /* GCC: 배치는 생성된 링커 스크립트가 한다 */
+#endif
+#ifndef TZIC_LOG_GUARDS
+#define TZIC_LOG_GUARDS 0
+#endif
+#define TZIC_TAG_RNR0   4u        /* secure_dma_boot.c TAG_RNR0 과 같음 */
+#define TZIC_LOG_N      4u        /* guard 당 최근 이벤트 수 (ring) */
+
+typedef struct
+{
+    uint32_t seq;      /* 전체 이벤트 번호 (g_tzic_sum.total, 1 부터) */
+    uint32_t dir;      /* 1 = 쓰기 (CMAR 쪽이 guard 에 닿음), 2 = 읽기 (CPAR 쪽) */
+    uint32_t sr3;      /* 진입 시 TZIC SR3 */
+    uint32_t ccr;      /* 진입 시 DMA CCR (EN = 1) */
+    uint32_t cndtr;    /* 중단 시 남은 전송 수 */
+    uint32_t cpar;     /* src 시작 */
+    uint32_t cmar;     /* dst 시작 */
+} tzic_event_t;
+
+typedef struct
+{
+    uint32_t     count;            /* 이 guard 에 기록된 이벤트 수. 최근 것 = ev[(count - 1) % N] */
+    tzic_event_t ev[TZIC_LOG_N];
+} tzic_guard_log_t;                /* 4 + 4 × 28 = 116 B (≤ 256 B 블록) */
+_Static_assert(sizeof(tzic_guard_log_t) <= 256u, "TZIC log must fit in one guard block");
+
+typedef struct
+{
+    uint32_t total;                /* GTZC_IRQHandler 진입 수 */
+    uint32_t other;                /* DMA 전송 중이 아니었던 진입 (CPU 접근 등): guard 를 특정할 수 없어 개수만 */
+} tzic_summary_t;
+
+GUARD_OBJ("guard") tzic_summary_t g_tzic_sum;
+#if TZIC_LOG_GUARDS > 0
+GUARD_OBJ("guard:0") tzic_guard_log_t g_tzic_log0;
+#endif
+#if TZIC_LOG_GUARDS > 1
+GUARD_OBJ("guard:1") tzic_guard_log_t g_tzic_log1;
+#endif
+#if TZIC_LOG_GUARDS > 2
+GUARD_OBJ("guard:2") tzic_guard_log_t g_tzic_log2;
+#endif
+#if TZIC_LOG_GUARDS > 3
+GUARD_OBJ("guard:3") tzic_guard_log_t g_tzic_log3;
+#endif
+#if TZIC_LOG_GUARDS > 4
+#error "TZIC_LOG_GUARDS > 4: S-MPU 태그 region 4 개 (RNR4-7) 를 넘음"
+#endif
+
+#if TZIC_LOG_GUARDS > 0
+static tzic_guard_log_t * const s_tzic_logs[TZIC_LOG_GUARDS] = {
+    &g_tzic_log0,
+#if TZIC_LOG_GUARDS > 1
+    &g_tzic_log1,
+#endif
+#if TZIC_LOG_GUARDS > 2
+    &g_tzic_log2,
+#endif
+#if TZIC_LOG_GUARDS > 3
+    &g_tzic_log3,
+#endif
+};
+
+/* x 에서 주소가 증가할 때 guard [g, g+256) 까지 남은 바이트 (x 가 guard 안이면 0, 이미 지났으면 UINT32_MAX) */
+static uint32_t prvGuardDist(uint32_t x, uint32_t g)
+{
+    if (x >= g + 256u) return UINT32_MAX;
+    return (x >= g) ? 0u : (g - x);
+}
+
+/* DMA 가 닿은 guard 를 골라 그 guard 의 로그에 기록. 반환: guard 번호 또는 -1 */
+static int prvTzicLog(uint32_t sr3, uint32_t ccr)
+{
+    uint32_t cpar = DMA_CH->CPAR, cmar = DMA_CH->CM0AR, cndtr = DMA_CH->CNDTR;   /* M2M: CPAR = src, CM0AR = dst (mediator 와 같음) */
+    uint32_t best = UINT32_MAX, dir = 0u;
+    int k = -1;
+    uint32_t rnr = MPU->RNR;                       /* S-MPU RNR 보존 (부팅 뒤 S-MPU 를 바꾸는 코드는 없음) */
+    for (uint32_t i = 0; i < TZIC_LOG_GUARDS; i++)
+    {
+        MPU->RNR = TZIC_TAG_RNR0 + i;
+        uint32_t rlar = MPU->RLAR;
+        if ((rlar & MPU_RLAR_EN_Msk) == 0u) continue;
+        uint32_t g = (rlar | 0x1Fu) + 1u;          /* 태그 끝 + 1 = 그 cluster 의 guard 시작 */
+        uint32_t dw = prvGuardDist(cmar, g), dr = prvGuardDist(cpar, g);
+        if (dw < best) { best = dw; dir = 1u; k = (int)i; }
+        if (dr < best) { best = dr; dir = 2u; k = (int)i; }
+    }
+    MPU->RNR = rnr;
+    if (k < 0) return -1;
+    tzic_guard_log_t *L = s_tzic_logs[k];
+    tzic_event_t *e = &L->ev[L->count % TZIC_LOG_N];
+    e->seq = g_tzic_sum.total; e->dir = dir; e->sr3 = sr3; e->ccr = ccr;
+    e->cndtr = cndtr; e->cpar = cpar; e->cmar = cmar;
+    L->count++;
+    return k;
+}
+#endif
+
 /* 전송 시점 보호 (논문 §3.4) + 위반 뒤 복구 (llvm_dma_cluster D8).
  * 원본은 채널만 끄고 끝나서 s_busy = 1, NS 태스크는 완료 통지를 영원히 기다렸다 [실측: 보드 4단계].
  * 이제 DMA ISR 의 완료 경로와 같은 순서로 채널을 반납하고, NS 에 status 2 (guard 위반) 를 알린다.
@@ -656,8 +769,19 @@ void GTZC_IRQHandler(void)
     DMA_CH->CCR = ccr & ~DMA_CCR_EN;
     __DSB();
 
+    uint32_t sr3 = GTZC_TZIC_S->SR3;                     /* 로그용: 지우기 전 값 */
     GTZC_TZIC_S->FCR3 = 0b10000U;
     __DSB();
+
+    /* TZIC 로그 (D11): 채널을 멈춘 뒤 기록. 복구(s_busy 해제, NS 통지)보다 앞이라 NS 는 기록 뒤에 깨어난다 */
+    g_tzic_sum.total++;
+#if TZIC_LOG_GUARDS > 0
+    if (!(ccr & DMA_CCR_EN) || prvTzicLog(sr3, ccr) < 0)
+        g_tzic_sum.other++;
+#else
+    (void)sr3;
+    g_tzic_sum.other++;
+#endif
 
     if ((ccr & DMA_CCR_EN) && s_busy)
     {

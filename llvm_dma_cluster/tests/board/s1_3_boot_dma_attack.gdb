@@ -41,4 +41,8 @@ p/x *(unsigned*)0xE000ED28
 p/x *(unsigned*)0x50032818
 p/x $pc
 bt 3
+echo \n--- TZIC log (guard 안 Secure 객체)\n
+p/x g_tzic_sum
+p/x g_tzic_log0
+p/x g_tzic_log1
 detach

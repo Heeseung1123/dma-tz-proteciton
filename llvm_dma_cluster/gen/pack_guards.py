@@ -13,7 +13,9 @@
 규칙
   - 각 guard 블록 = 256 B 칸 하나. 블록끼리 떨어져 있으므로 객체 하나는 한 칸 안에만.
   - 모든 guard 블록을 쓸 수 있다 (mediator 는 SVC 경로라 Secure 스택용 guard 가 없다).
-  - 큰 객체부터, 들어갈 수 있는 첫 칸에 (First-Fit Decreasing, 정렬 패딩 포함).
+  - annotate("guard:<k>") 객체 (JSON "pin": k) 는 먼저 guard 블록 k 에 고정한다. 블록이 없거나 안 맞으면 오류.
+    (k = ns.elf 의 guard 순서: cluster 0 의 guard 블록들, cluster 1 의 … — 지금은 cluster 당 1 블록이라 k = cluster 번호)
+  - 나머지는 큰 객체부터, 들어갈 수 있는 첫 칸에 (First-Fit Decreasing, 정렬 패딩 포함).
   - 어느 칸에도 안 맞는 객체는 옮기지 않는다 (기존 Secure RAM 에 그대로).
 """
 import argparse
@@ -61,6 +63,19 @@ def main() -> int:
 
     bins = [{"ns": b, "used": 0, "objs": []} for b in blocks]
     left = []
+    for o in sorted((o for o in objs if o.get("pin", -1) >= 0), key=lambda o: (o["pin"], o["name"])):
+        k = o["pin"]
+        if k >= len(bins):
+            print(f"[pack] error: {o['name']} 는 guard {k} 에 고정인데 guard 블록은 {len(bins)} 개", file=sys.stderr)
+            return 1
+        b = bins[k]
+        off = align_up(b["used"], max(1, o["align"]))
+        if off + o["size"] > BLOCK:
+            print(f"[pack] error: {o['name']}({o['size']} B) 가 guard {k} 남은 칸에 맞지 않음", file=sys.stderr)
+            return 1
+        b["objs"].append(o)
+        b["used"] = off + o["size"]
+    objs = [o for o in objs if o.get("pin", -1) < 0]
     for o in sorted(objs, key=lambda o: (-o["size"], o["name"])):   # 큰 것부터 (결정적 순서)
         for b in bins:
             off = align_up(b["used"], max(1, o["align"]))

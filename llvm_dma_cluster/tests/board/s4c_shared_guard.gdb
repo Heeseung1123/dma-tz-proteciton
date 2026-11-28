@@ -30,4 +30,8 @@ p/x s_privB.v
 p s_taskA.priv.okCount
 p s_privB.okCount
 p s_taskA.priv.attack
+echo \n--- TZIC log (guard 안 Secure 객체)\n
+p/x g_tzic_sum
+p/x g_tzic_log0
+p/x g_tzic_log1
 detach

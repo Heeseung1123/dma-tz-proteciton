@@ -307,7 +307,10 @@ cluster 는 NOLOAD 라서 startup 의 `.bss` 초기화 루프가 지우지 않�
 ```
 - manifest 의 시작 주소는 `__dmac0_start` 입니다. `__dmac0_obj` 가 아니므로 **head 는 S-MPU 태그에 들어가지 않습니다.**
 - Secure 의 `dma_boot_config()` 는 이 표를 검증합니다 (정렬, 범위, 겹침). 그다음 S-MPU region 과 MPCBB guard 를 설정합니다.
-- Secure 쪽 생성물(`build/secure/gen/*.ld`)은 지금 비어 있습니다. guard 블록에 옮겨 둘 Secure 변수가 없기 때문입니다.
+- Secure 쪽 생성물(`build/secure/gen/secure_guard_mem.ld`, `secure_guard_sec.ld`)은 guard 블록을 Secure 메모리 영역으로 정의하고, 그 안에 TZIC 로그 객체를 놓습니다.
+  - guard 의 Secure alias `0x30018200` 에 `g_tzic_log0` 와 `g_tzic_sum` 이, `0x30018500` 에 `g_tzic_log1` 이 들어갑니다.
+  - 고정 방법: 소스의 `annotate("guard:<k>")` 를 `SecureGuardSelect` pass 가 `"pin": k` 로 기록하고, `pack_guards.py` 가 guard k 에 놓습니다.
+  - NS 쪽에서 이 블록은 Secure 이므로, NS DMA 가 쓰면 무시되고 읽으면 0 입니다. 그래서 로그를 NS 가 바꾸거나 읽을 수 없습니다.
 
 ---
 

@@ -60,6 +60,10 @@ import threading
 threading.Timer(3.0, lambda: gdb.post_event(lambda: gdb.execute('interrupt'))).start()
 end
 c
+echo \n--- TZIC log (guard 안 Secure 객체)\n
+p/x g_tzic_sum
+p/x g_tzic_log0
+p/x g_tzic_log1
 echo \n--- +3s\n
 p s_taskA.priv.okCount
 p s_privB.okCount

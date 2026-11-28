@@ -20,6 +20,7 @@
 //   (5) 이미 section 이 지정되지 않았을 것, 제외 목록에 없을 것
 //
 // 모드: "annotated" (기본) — __attribute__((annotate("guard"))) 붙은 것만 채택,
+//                            annotate("guard:<k>") 는 guard 블록 k 에 고정 (JSON "pin": k),
 //                            나머지 안전한 것은 "possible" 로 보고만
 //       "auto"            — 안전한 것 전부 채택
 // 설정: 환경 변수 SECURE_GUARD_CONFIG=<config/secure_guard_config.json>
@@ -144,8 +145,9 @@ static void globalsOfInst(const Instruction &I, std::set<const GlobalVariable *>
       globalsIn(U.get(), Out, Seen);
 }
 
-static std::set<std::string> annotated(Module &M) {
-  std::set<std::string> R;
+// 이름 → pin (-1 = 아무 guard, k >= 0 = guard 블록 k 에 고정)
+static std::map<std::string, int> annotated(Module &M) {
+  std::map<std::string, int> R;
   GlobalVariable *A = M.getGlobalVariable("llvm.global.annotations");
   if (!A || !A->hasInitializer())
     return R;
@@ -156,8 +158,14 @@ static std::set<std::string> annotated(Module &M) {
           if (auto *SG = dyn_cast<GlobalVariable>(CS->getOperand(1)->stripPointerCasts());
               SG && SG->hasInitializer())
             if (auto *CDA = dyn_cast<ConstantDataArray>(SG->getInitializer());
-                CDA && CDA->isCString() && CDA->getAsCString() == "guard")
-              R.insert(G->getName().str());
+                CDA && CDA->isCString()) {
+              StringRef T = CDA->getAsCString();
+              unsigned K;
+              if (T == "guard")
+                R[G->getName().str()] = -1;
+              else if (T.consume_front("guard:") && !T.getAsInteger(10, K))
+                R[G->getName().str()] = static_cast<int>(K);
+            }
   return R;
 }
 
@@ -230,14 +238,15 @@ struct SecureGuardSelectPass : PassInfoMixin<SecureGuardSelectPass> {
           globalsOfInst(I, BootUsed);
 
     // ---- 후보 판정 ----
-    const std::set<std::string> Ann = annotated(M);
+    const std::map<std::string, int> Ann = annotated(M);
     const DataLayout &DL = M.getDataLayout();
     json::Array Chosen, Possible, Rejected;
     for (GlobalVariable &G : M.globals()) {
       StringRef N = G.getName();
       if (N.starts_with("llvm.") || N.starts_with("__"))
         continue;
-      bool IsAnn = Ann.count(N.str());
+      auto AnnIt = Ann.find(N.str());
+      bool IsAnn = AnnIt != Ann.end();
       std::string Why;
       uint64_t Sz = G.isDeclaration() ? 0 : DL.getTypeAllocSize(G.getValueType());
       if (G.isDeclaration())
@@ -264,6 +273,7 @@ struct SecureGuardSelectPass : PassInfoMixin<SecureGuardSelectPass> {
                        {"size", static_cast<int64_t>(Sz)},
                        {"align", static_cast<int64_t>(Al)},
                        {"annotated", IsAnn},
+                       {"pin", IsAnn ? AnnIt->second : -1},
                        {"gcc_section", (".bss." + N).str()}};
       if (!Why.empty()) {
         if (IsAnn) // 표시했는데 안전하지 않음 → 반드시 알려야 함

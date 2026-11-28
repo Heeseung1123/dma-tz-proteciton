@@ -98,6 +98,12 @@ Task A 의 `s_dmaShared` 요청 (r1 = 0x200184c0) 에서 CNDTR1 = 0x150 (336 B =
 `s_taskA.priv.v.dmaStatus` = 2, A·B okCount 계속 증가. 공유 버퍼에서 넘친 쓰기는 guard 를 새로 쓰지 않고
 Task B 의 guard 에서 멈춘다.
 
+### 4d. TZIC 로그 (D11) — guard 안 Secure 객체
+각 guard 시험 뒤 `p/x g_tzic_sum`, `p/x g_tzic_log0`, `p/x g_tzic_log1` (스크립트에 포함).
+기대 [실측 2026-11-28]: 부팅 직후 모두 0. 쓰기 A → log0.ev[0] {dir 1, cmar 0x20018100, cndtr 0x10c},
+읽기 A → log0 {dir 2, cpar 0x20018200}, 공유 → log1 {dir 1, cmar 0x200184c0, cndtr 0x10c}.
+NS 에서 멈춘 상태로 Secure alias (0x3001xxxx) 를 GDB 로 읽고 재개하면 `other` 가 늘 수 있다 [추정].
+
 ## 5. SVC 경로 확인 (Secure context 없는 DMA 태스크)
 ```gdb
 b *0x0c000ec6                  # __acle_se_SECURE_dma_m2m_start_svc 첫 명령 (mrs r3, ipsr)

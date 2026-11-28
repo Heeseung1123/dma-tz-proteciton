@@ -114,6 +114,12 @@ Secure `.text` 는 실제로 12080 B 입니다. 그중 64 B 는 `GTZC_IRQHandler
 ### 3.7 Secure SRAM +8 B
 `.data` 가 24 B 에서 32 B 가 되었습니다. `g_dma_boot_status` (부팅 결과, GDB 확인용) 등이 늘어난 것입니다.
 
+## 3.8 guard 블록 재활용: TZIC 로그 (D11) [빌드 실측 + 보드 실측]
+- guard 512 B 중 240 B 에 Secure 객체를 둔다: guard A = `g_tzic_log0` 116 + `g_tzic_sum` 8 B, guard B = `g_tzic_log1` 116 B.
+- 그래서 로그용 Secure RAM 은 0 B 다 (`.bss` 10448 B 그대로). 로그를 Secure RAM 에 두었다면 240 B 가 더 들었다.
+- 대신 Secure Flash 가 +584 B 늘었다 (-O0, 로그 기록 코드). 부팅 시 guard 안 객체의 주소 확인과 0 초기화는 기존 `guard_bind_init` 이 한다.
+- 보드에서 위반마다 해당 guard 의 로그에 방향, CPAR, CM0AR, 남은 CNDTR 가 남는 것을 확인했다 (VERIFY_LOG D11).
+
 ## 4. 결론
 - 같은 보호(태스크당 guard 1개, S-MPU 태그 1개)를 유지하면서 **NS SRAM 오버헤드는 1152 B → 635 B 로 줄었습니다.** 수동 배치의 정렬 패딩(640 B)이 없어졌고, 앞 칸을 다 못 채운 123 B 가 새로 생겼습니다.
 - 그 대신 **Flash 가 늡니다.** NS +264 B (manifest, 0 초기화 표와 함수), Secure +808 B (manifest 검증 부팅 코드, -O0 기준. -Os 면 약 400 B 대 [추정]).

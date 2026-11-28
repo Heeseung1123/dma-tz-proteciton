@@ -191,10 +191,32 @@ Task A 는 globals 를 c0 앞에 붙여 NS-MPU region 2 개로 하되, 붙는 �
 - 읽기 guard 에서 TEIF 없음 (ISR 0) 은 이번에도 같음 (D7 열림).
 - 메모리 오버헤드: NS SRAM 635 B (수동 배치 1152 B), NS Flash +264 B, Secure Flash +808 B (resultMemoryAuto.md §2–3).
 
+## TZIC 로그를 guard 블록 안 Secure 객체에 (2026-11-28, 사용자 결정 D11: guard 마다 로그 1 개)
+- `secure_nsc.c` 사본:
+  - 로그 객체: `g_tzic_log<k>` (`tzic_guard_log_t`, 116 B = count + 최근 4 건 {seq, dir, SR3, CCR, CNDTR, CPAR, CM0AR}) 를
+    `annotate("guard:<k>")` 로, 요약 `g_tzic_sum` {total, other} 을 `annotate("guard")` 로 둔다 (clang 분석 빌드에서만 attribute).
+  - 개수 `TZIC_LOG_GUARDS` 는 `secure_common.sh` 가 ns.elf 의 cluster 수에서 정한다 (cluster 당 guard 1 블록이 아니면 빌드 중단).
+  - `GTZC_IRQHandler`: EN 끄기 → SR3 읽고 지우기 → `g_tzic_sum.total++` → DMA 전송 중이었으면 `prvTzicLog()` → 복구 (D8).
+    `prvTzicLog`: S-MPU 태그 RNR(4+k) 의 RLAR 로 guard k 위치를 읽고, CM0AR(쓰기)/CPAR(읽기) 에서 증가 방향으로 가장 먼저 닿는
+    guard 를 골라 그 guard 의 로그에 기록. TZIC 는 위반 주소를 주지 않아 이렇게 추정한다 (RM0438 GTZC 장 SR3, 절 번호 미확인) [아키텍처 도출].
+    DMA 가 멈춰 있던 진입은 `other` 만 센다.
+- `SecureGuardSelect.cpp`: annotation `"guard:<k>"` → JSON `"pin": k`. `pack_guards.py`: pin 객체를 먼저 guard 블록 k 에 (없거나 안 맞으면 오류).
+- 결과 [빌드]: guard A (0x30018200) = g_tzic_log0 116 + g_tzic_sum 8 B, guard B (0x30018500) = g_tzic_log1 116 B.
+  Secure `.bss` 10448 B 그대로 (로그 240 B 는 guard 안). Secure `.text` 12080 → 12664 B (+584 B, -O0: prvTzicLog 300, prvGuardDist 58, GTZC +52 등).
+- 시험: T7 (log k ⊂ guard k, sum ⊂ guard). 22/22.
+- 보드 [실측]: 부팅 직후 로그 전부 0 (guard_bind_init 0 초기화).
+  쓰기 guard A → log0 {dir 1, CPAR flash, CM0AR 0x20018100, CNDTR 0x10c (528 중 260 전송 = 256 + 4)}.
+  읽기 guard A → log0 {dir 2, CPAR 0x20018200 (guard), CM0AR 0x20018100, CNDTR 6}.
+  공유 → guard B → **log1** {dir 1, CM0AR 0x200184c0, CNDTR 0x10c (336 중 68 = 64 + 4)}.
+  - 쓰기 guard 시험에서만 `other` 2 [실측]:
+    - 1 건은 위반 직후 EN = 0 상태의 재진입이다. 원인 미확인 (읽기, 공유 시험에서는 없음).
+    - 1 건은 NS 에서 멈춘 상태로 GDB 가 Secure alias 0x30018200 을 읽은 뒤 실행을 재개했을 때 생긴다. 디버거 접근이 TZIC 플래그를 세운 것으로 보인다 [추정].
+    - 두 건 모두 guard 로그에는 들어가지 않았다.
+
 ## 시험 요약 (마지막 실행: 처음부터 `rm -rf build && build_all.sh && tests/run_tests.sh`, SVC 경로)
 - 1단계 플러그인: OK (LLVM 18.1.8). 2단계 NS: OK (1/2차 JSON 동일, check_layout OK). 3단계 Secure: OK (veneer 16 개 동일, check_pair 0).
 - 4단계 보드: **실행함** (2026-11-28 두 번: 위 "보드 확인", "보드 확인 2"). 1·2·3·5·6 기대와 같음, 4 는 보호 동작 확인 + 기대와 다른 점 2 개 (중단 뒤 복구 없음, 읽기에서 TEIF 없음).
-- 5단계 + 개선 시험: `tests/run_tests.sh` PASS 21 / FAIL 0 (D10 개정 후, pass 단위 19 항목).
+- 5단계 + 개선 시험: `tests/run_tests.sh` PASS 21 / FAIL 0 (D11 개정 후 22 / 0, pass 단위 19 항목).
 - GCC baseline: `./build.sh` 그대로 (프로젝트 원본 파일 변경 없음. 작업 전부터 있던 `secure_context.c` 공백 수정 1 줄은 건드리지 않음).
 
 ## 결정이 필요한 항목 (사용자)

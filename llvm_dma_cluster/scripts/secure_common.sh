@@ -36,7 +36,24 @@ S_LDS=$(ov "$_P/STM32CubeIDE/Secure/STM32L562QEIXQ_FLASH.ld")
 
 # mediator 는 프로젝트 그대로: NS SVC_Handler fast path (SVC #110) → SECURE_dma_m2m_start_svc (secure_nsc.c,
 # MEDIATOR_ASM). Secure context/스택 패치 없음 (secure_context*.c 원본).
-S_DEFS="-DUSE_HAL_DRIVER -DSTM32L562xx -DDEBUG ${S_EXTRA_DEFS:-}"
+# TZIC 로그 (D11): guard 마다 로그 객체 1 개 → guard 개수를 NS 이미지에서 센다.
+# 로그 k 는 S-MPU 태그 RNR(4+k) 뒤 guard 이고 pack 의 guard 블록 k 이므로 cluster 당 guard 1 블록이어야 한다.
+TZIC_LOG_GUARDS=0
+if [ -f "${NS_ELF:-$TOOLS/build/ns/ns.elf}" ]; then
+  TZIC_LOG_GUARDS=$(python3 - "${NS_ELF:-$TOOLS/build/ns/ns.elf}" <<'PYEOF'
+import sys
+from elftools.elf.elffile import ELFFile
+S = {s.name: s["st_value"] for s in ELFFile(open(sys.argv[1], "rb")).get_section_by_name(".symtab").iter_symbols()}
+n = 0
+while f"__dmac{n}_end" in S:
+    if S[f"__dmac{n}_guard_end"] - S[f"__dmac{n}_end"] != 256:
+        sys.exit(f"cluster {n}: guard 가 1 블록이 아님 (TZIC 로그 guard 번호 = cluster 번호 가정)")
+    n += 1
+print(n)
+PYEOF
+)
+fi
+S_DEFS="-DUSE_HAL_DRIVER -DSTM32L562xx -DDEBUG -DTZIC_LOG_GUARDS=$TZIC_LOG_GUARDS ${S_EXTRA_DEFS:-}"
 S_INCS="-I$ROOT/Drivers/BSP/STM32L562E-DK -I$ROOT/$_P/Secure/Inc -I$ROOT/$_P/Secure_nsclib \
  -I$ROOT/Drivers/STM32L5xx_HAL_Driver/Inc -I$ROOT/Drivers/CMSIS/Device/ST/STM32L5xx/Include \
  -I$ROOT/Drivers/STM32L5xx_HAL_Driver/Inc/Legacy -I$ROOT/$_FS \
