@@ -27,13 +27,15 @@ end
 c
 echo \n=== 2. normal DMA (60 s)\n
 p g_dma_boot_status
-p s_privA.okCount
+p s_taskA.priv.okCount
 p s_privB.okCount
-x/8bx &s_dmaDstA
+x/8bx &s_taskA.dst
 x/8bx &s_dmaDstB
-p/x s_privA.v.dmaStatus
+x/8bx &s_dmaShared
+x/8bx ((char*)&s_dmaShared)+32
+p/x s_taskA.priv.v.dmaStatus
 echo \n=== 3. attack\n
-p s_privA.attack
+p s_taskA.priv.attack
 p/x *(unsigned*)0xE000EDE4
 p/x *(unsigned*)0xE000ED28
 p/x *(unsigned*)0x50032818

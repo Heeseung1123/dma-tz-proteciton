@@ -10,6 +10,14 @@ cluster 는 guard 쪽으로 붙인다(오른쪽 정렬): 용량 cap = bound 를 
 256 B 블록 안에서 cluster 앞에 남는 칸(pre)은 S-MPU 태그도 owner 의 DMA NS-MPU region 도 아니므로
 mediator 가 DMA 대상으로 받지 않는다(TTT 실패). 그래서 아무 NS 데이터나 둘 수 있다.
 --fill-map 을 주면 1차 링크 map 의 .bss.<이름> 입력 섹션을 큰 것부터(First-Fit Decreasing) 그 칸에 넣는다.
+
+블록 안 순서 (주소 증가 방향):
+  [pre: 일반 NS .bss] [head: 구조체의 앞 필드 (태그 밖)] [cluster = S-MPU 태그: 구조체 DMA 필드, 전용 버퍼,
+   맨 끝에 host 된 공유 버퍼] [guard]
+  - head  : pass 가 "struct { globals; dst[]; }" 처럼 구조체 일부만 DMA 에 쓰는 것을 찾은 경우 (".dma.h.<task>").
+            NS-MPU region 은 head + cluster 를 하나로 덮고, S-MPU 태그는 cluster 만 덮는다.
+  - hosted: shared_host 설정으로 host 태스크 cluster 끝에 붙인 공유 버퍼 (".dma.x.<host>"). guard 추가 없음.
+            다른 owner 는 이 부분만 덮는 NS-MPU region 을 하나 더 쓴다.
   dma_manifest.c   : Secure boot 가 읽는 manifest (링커 심볼 참조 → 주소는 링커가 채움)
   dma_regions.h    : 태스크별 NS-MPU region 초기화 매크로 (xTaskCreateRestricted 용)
   layout_final.json: 생성에 사용한 입력 사본 (2차 링크가 dma_layout.json 을 덮어쓰므로)
@@ -99,51 +107,78 @@ def main() -> int:
     zero = []
     mani_ext, mani_ent = [], []
     regions_by_task: dict[str, list[str]] = {}
-    reg_defs = []
+    reg_defs, reg_syms = [], []
     cands = bss_candidates(a.fill_map, set(a.fill_exclude)) if a.fill_map else []
     used: set[str] = set()
     report = []
 
     for i, c in enumerate(clusters):
-        cap = align_up(max(int(c["bytes_bound"]), 1), 32)    # S-MPU / NS-MPU 32 B 단위
-        span = align_up(cap, 256)                             # cluster 끝 = 256 B 경계 = guard
-        pre = span - cap                                      # cluster 앞 빈 칸 (DMA 불가 영역)
+        head = int(c.get("head", 0))                          # 구조체 앞 필드 (태그 밖), 32 B 배수
+        hb = int(c.get("hosted_bound", 0))
+        sh = align_up(hb, 32) if hb else 0                    # host 된 공유 버퍼 칸 (NS-MPU region 단위)
+        body = int(c.get("body_bound", c["bytes_bound"]))
+        cap = align_up(max(body, 1), 32) + sh                 # S-MPU 태그 크기 (S-MPU / NS-MPU 32 B 단위)
+        span = align_up(head + cap, 256)                      # cluster 끝 = 256 B 경계 = guard
+        pre = span - head - cap                               # 앞 빈 칸 (DMA 불가 영역)
         picked, pre_used = fill(cands, pre, used) if pre else ([], 0)
         report.append((i, c, cap, pre, picked, pre_used))
         s = f"__dmac{i}"
+        body_ld = [f"  {s}_obj = .;                 /* head 시작 (head 없으면 = start) */"]
+        if head:
+            body_ld += [f"  KEEP(*({c['head_section']}))   /* {c['head_buffer']}: 앞 {head:#x} B = head (태그 밖) */",
+                        f"  {s}_start = {s}_obj + {head:#x};"]
+        else:
+            body_ld += [f"  {s}_start = .;"]
+        body_ld += [f"  KEEP(*({c['section']}))", f"  {s}_fill = .;"]
+        if sh:
+            body_ld += [f"  . = {s}_start + {cap - sh:#x};",
+                        f"  {s}_shr = .;                 /* host 된 공유 버퍼: guard 바로 앞 */",
+                        f"  KEEP(*({c['hosted_section']}))",
+                        f"  {s}_shr_fill = .;"]
         ld += [
             f"/* c{i}: {c['id']}  owners={','.join(c['owners'])}  bound={c['bytes_bound']} B"
-            f"  → pre {pre:#x} (NS 데이터 {pre_used} B) + cluster {cap:#x} + guard */",
+            f"  → pre {pre:#x} (NS 데이터 {pre_used} B) + head {head:#x} + cluster {cap:#x}"
+            + (f" (끝 {sh:#x} = 공유, {','.join(c.get('hosted_owners', []))})" if sh else "") + " + guard */",
             f".dma_c{i} (NOLOAD) : ALIGN(256)",
             "{",
             f"  {s}_pre_start = .;           /* S-MPU 태그 밖: 일반 NS 데이터 (DMA 대상 아님) */",
             *[f"  *({sec})" for sec in picked],
             f"  {s}_pre_end = .;",
             f"  . = {s}_pre_start + {pre:#x};",
-            f"  {s}_start = .;",
-            f"  KEEP(*({c['section']}))",
-            f"  {s}_fill = .;",
+            *body_ld,
             f"  . = {s}_start + {cap:#x};",
             f"  {s}_end = .;                 /* = MPCBB guard base */",
             f"  . = . + {guard_bytes:#x};",
             f"  {s}_guard_end = .;",
             f"}} > {a.ram}",
-            f'ASSERT({s}_fill <= {s}_end, "dma cluster c{i} overflow")',
+            f'ASSERT({s}_fill <= {s}_start + {cap - sh:#x}, "dma cluster c{i} overflow")',
+            *([f'ASSERT({s}_shr_fill <= {s}_end, "dma cluster c{i}: 공유 버퍼 overflow")'] if sh else []),
+            *([f'ASSERT({s}_fill >= {s}_start, "dma cluster c{i}: head 구조체가 head 보다 작음")'] if head else []),
             f'ASSERT({s}_pre_end - {s}_pre_start == {pre_used:#x}, '
             f'"dma cluster c{i}: pre-fill 가 1차 링크와 다름 (객체 크기/이름 변경)")',
+            f'ASSERT(({s}_obj % 32) == 0, "dma cluster c{i}: NS-MPU base not 32B aligned")',
             f'ASSERT(({s}_start % 32) == 0, "dma cluster c{i}: S-MPU base not 32B aligned")',
             f'ASSERT(({s}_end % 256) == 0, "dma cluster c{i}: guard not 256B aligned")',
             "",
         ]
-        zero.append(f"    LONG({s}_pre_start) LONG({s}_end)")   # pre 의 .bss 도 0 초기화
+        zero.append(f"    LONG({s}_pre_start) LONG({s}_end)")   # pre 의 .bss, head 도 0 초기화
         kind = "DMA_KIND_SHARED" if c["kind"] == "shared" else "DMA_KIND_TASK"
         mani_ext.append(f"extern uint8_t {s}_start[], {s}_end[];")
         mani_ent.append(f"    {{ {i}u, {kind}, {s}_start, {s}_end, {a.guard_blocks}u }},")
         reg_defs.append(
-            f"#define DMA_REGION_C{i} {{ (void *){s}_start, {cap:#x}u, "
-            f"tskMPU_REGION_READ_WRITE | tskMPU_REGION_EXECUTE_NEVER }}  /* {c['id']} */")
+            f"#define DMA_REGION_C{i} {{ (void *){s}_obj, {head + cap:#x}u, "
+            f"tskMPU_REGION_READ_WRITE | tskMPU_REGION_EXECUTE_NEVER }}  /* {c['id']}"
+            + (" (head + cluster)" if head else "") + " */")
+        reg_syms.append(f"{s}_obj")
         for o in c["owners"]:
             regions_by_task.setdefault(o, []).append(f"DMA_REGION_C{i}")
+        if sh:
+            reg_defs.append(
+                f"#define DMA_REGION_C{i}_SHARED {{ (void *){s}_shr, {sh:#x}u, "
+                f"tskMPU_REGION_READ_WRITE | tskMPU_REGION_EXECUTE_NEVER }}  /* {c['id']} 끝 공유 버퍼 */")
+            reg_syms.append(f"{s}_shr")
+            for o in c.get("hosted_owners", []):
+                regions_by_task.setdefault(o, []).append(f"DMA_REGION_C{i}_SHARED")
 
     ld += [
         "/* 이름이 맞지 않아 남은 .dma.* 가 있으면 링크 실패 (pass 와 생성물 불일치 탐지) */",
@@ -182,7 +217,7 @@ def main() -> int:
             return 1
     hdr = ["/* generated by gen_layout.py — task.h 다음에 include */",
            "#ifndef DMA_REGIONS_H", "#define DMA_REGIONS_H", "#include <stdint.h>",
-           *[f"extern uint8_t __dmac{i}_start[];" for i in range(len(clusters))],
+           *[f"extern uint8_t {x}[];" for x in reg_syms],
            *reg_defs, ""]
     for t, regs in sorted(regions_by_task.items()):
         hdr.append(f"#define DMA_TASK_REGIONS_{t}  {', '.join(regs)}")
@@ -193,7 +228,11 @@ def main() -> int:
     shutil.copyfile(a.layout, out / "layout_final.json")
     for i, c, cap, pre, picked, pre_used in report:
         print(f"[gen] c{i} {c['id']:20s} owners={','.join(c['owners']):24s} "
-              f"bound {c['bytes_bound']:5d} B → cap {cap:5d} B (+guard 256), 앞 칸 {pre:3d} B", file=sys.stderr)
+              f"bound {c['bytes_bound']:5d} B → head {int(c.get('head', 0)):3d} + cap {cap:5d} B (+guard 256), 앞 칸 {pre:3d} B",
+              file=sys.stderr)
+        if c.get("hosted_bound"):
+            print(f"[gen]    끝 공유 버퍼 {align_up(int(c['hosted_bound']), 32)} B (guard 바로 앞), "
+                  f"추가 NS-MPU region: {','.join(c.get('hosted_owners', []))}", file=sys.stderr)
         if picked:
             names = ", ".join(x[len(".bss."):] for x in picked)
             print(f"[gen]    앞 칸 NS 데이터 {pre_used}/{pre} B: {names}", file=sys.stderr)

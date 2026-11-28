@@ -4,6 +4,7 @@
 - s1_3_boot_dma_attack.gdb : 1–3단계 (부팅, 60 s 정상 DMA, 공격 결과)
 - s4_5_svc_write_guard.gdb : 5단계 SVC 경로, 4단계 쓰기 guard (CPAR1 = NS flash, CNDTR1 = 528)
 - s4b_read_guard.gdb       : 4단계 읽기 guard (CPAR1 = guard)
+- s4c_shared_guard.gdb     : 4c단계 공유 버퍼 쓰기 guard (Task A → s_dmaShared, CNDTR1 = 336 → guard B)
 - s6_stale.gdb             : 6단계 stale 짝 → −7
 - cyc_roundtrip.py         : 요청 1 회 (svc → 다음 명령) CYCCNT. env SELF NSELF SITES
 - cyc_icache.py            : 같은 측정 + ICACHE hit/miss, on/off. env SELF NSELF SITE

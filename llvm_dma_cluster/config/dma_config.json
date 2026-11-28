@@ -68,6 +68,10 @@
     "malloc",
     "calloc"
   ],
+  "shared_host": {
+    "vDmaTaskA,vDmaTaskB": "vDmaTaskB"
+  },
+  "shared_host_note": "A,B 공유 버퍼는 Task B cluster 끝 (guard B 바로 앞) 에 둔다: guard/S-MPU 추가 없음, A 는 그 칸만 덮는 NS-MPU region 1 개",
   "exclude_callers": [
     "App_DmaAttackTests"
   ]

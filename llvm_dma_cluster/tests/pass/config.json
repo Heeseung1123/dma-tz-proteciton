@@ -1,5 +1,6 @@
 {
   "out": "unused.json",
   "sinks": [ { "func": "SINK", "args": [1] }, { "svc": 110, "args": [1] } ],
+  "shared_host": { "taskQ,taskT": "taskQ" },
   "exclude_callers": ["attack"]
 }

@@ -35,6 +35,13 @@ void taskV(void *p)
 }
 void taskS(void *p) { unsigned char l[4]; (void)p; SINK(0, l, 4); SINK(0, bufTest, 4); }
 
+/* 구조체 일부만 DMA (head = 앞 필드 32 B, 태그 밖) + 공유 버퍼를 taskQ cluster 끝에 (shared_host) */
+struct memT { unsigned char g[32]; unsigned char dst[32]; };
+static struct memT s_memT;
+static unsigned char bufQ[16], bufH[16];
+void taskT(void *p) { unsigned i = (unsigned)p & 7u; SINK(0, s_memT.dst, 4); SINK(0, &s_memT.dst[i], 4); SINK(0, bufH, 4); }
+void taskQ(void *p) { (void)p; SINK(0, bufQ, 4); SINK(0, bufH, 4); }
+
 void init(void)
 {
     s_cb = cbX;
@@ -45,4 +52,6 @@ void init(void)
     xTaskCreate(taskS, "S", 128, 0, 1, 0);
     xTaskCreate(timerTask, "T", 128, 0, 1, 0);
     xTaskCreate(taskV, "V", 128, 0, 1, 0);
+    xTaskCreate(taskT, "T2", 128, 0, 1, 0);
+    xTaskCreate(taskQ, "Q", 128, 0, 1, 0);
 }

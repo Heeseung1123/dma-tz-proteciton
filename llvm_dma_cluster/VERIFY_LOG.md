@@ -160,10 +160,35 @@
 - Secure Flash +808 B 내역 (GCC -O0, `objdump -dl` 줄 단위): dma_boot_config 802 B = 엔트리 복사+범위 검사 272, MPCBB 이중 루프 142,
   겹침 검사 134, S-MPU 루프 116, 헤더 검사 64, 프레임 50, guard_bind 호출 24. 같은 파일을 -O1 / -Os 로 빌드하면 456 / 408 B [실측: 오브젝트 크기].
 
+## Task A struct + Task B cluster 끝 공유 버퍼 (2026-11-28, 사용자 결정 D10)
+사용자 요구: 공유 DMA 버퍼 64 B 를 guard 추가 없이 Task B guard 바로 앞(②)에 두고 Task B 의 S-MPU 태그로 덮는다.
+Task A 는 globals 를 c0 앞에 붙여 NS-MPU region 2 개로 하되, 붙는 이유는 배치 도구가 아니라 struct 여야 한다.
+- 앱 (`app_freertos.c` 사본): `static struct { dma_task_priv_t priv; uint8_t dst[256]; } s_taskA;` (priv 96 B, dst 오프셋 96),
+  `s_dmaShared[64]` 을 A (n%4==0) 와 B (n%4==2, +32) 가 씀. 공격 시험 8 개 (+[6] 공유 정상, [7] 공유 끝이 guard B).
+- pass (`DmaCluster.cpp`):
+  - 구조체 전역의 필드 판정: `offsetInto()` 가 상수 GEP / 가변 인덱스 GEP(상수 앞부분) 에서 G 기준 오프셋 → 최상위 필드.
+    DMA 필드 중 가장 앞 필드의 오프셋 = head (32 B 배수 아니면 error `struct-field-align`). head 를 가진 구조체는
+    `.dma.h.<task>`, 뒤에 DMA 에 안 쓰는 필드가 있으면 warning `struct-field-tail`. 한 cluster 에 head 둘이면 error.
+    이전 동작 (구조체 전체를 태그 안에 넣음) 이면 같은 struct 의 globals 가 DMA 대상이 되어 attack[2] 가 통과했을 것 [아키텍처 도출].
+  - 설정 `shared_host` ({"vDmaTaskA,vDmaTaskB": "vDmaTaskB"}): 그 owner 집합의 공유 버퍼는 별도 cluster 없이
+    `.dma.x.<host>` 로 host cluster 끝에. JSON 에 head / body_bound / hosted_bound / hosted_owners.
+- `gen_layout.py`: 블록 = [pre .bss][head][태그: 전용 버퍼 … 끝에 공유 버퍼(guard 바로 앞, 32 B 단위 칸)][guard].
+  NS-MPU region: host owner = {obj, head+cap}, 다른 owner = {shr, 공유 칸}. S-MPU (manifest) = {start, end} (head 제외).
+- `check_layout.py`: head 구조체 시작 = obj, 시작+head = 태그 시작, 공유 버퍼 ⊂ [shr, end), 공유 region 개수 확인.
+- 결과 [빌드]: c0 obj 0x200180a0 (s_taskA), 태그 [0x20018100, 0x20018200), guard A 0x20018200;
+  c1 앞 칸 s_privB 0x20018300, 태그 [0x200183c0, 0x20018500) = s_dmaDstB + s_dmaShared@0x200184c0, guard B 0x20018500.
+  NS-MPU: A {0x200180a0,0x160}+{0x200184c0,0x40}, B {s_privB,0x60}+{0x200183c0,0x140} → 둘 다 2/3. S-MPU 2, guard 2.
+- 요청 시점 기대 [아키텍처 도출]: attack = {0,-1,-1,-1,-1,-1,0,-1}. [2] 는 TTAT 통과 (struct 전체가 A 의 region) → TTT 거부.
+- 남는 성질 [아키텍처 도출]: Task B 의 s_dmaDstB 에서 넘친 DMA 는 공유 버퍼에 닿는다 (guard 사이에 없음). B 는 원래 공유 버퍼
+  쓰기 권한이 있으므로 권한 밖 쓰기는 아니다. Task A 가 공유 버퍼에서 넘치면 guard B.
+- 메모리 [빌드 실측]: guard 512 B, 앞 칸 미사용 27 B (c0 160 중 133) + 96 B (c1 192 중 96) → 보호 관련 NS SRAM 635 B
+  (수동 배치 1152 B). NS Flash +264 B, Secure .text 12080 B (D8/D9 와 같음: Secure 코드 변경 없음).
+- 시험: pass 단위 19 항목 (struct head 상수/가변 인덱스, shared_host 추가), T6 을 새 배치(main / annotate_ok / fill off)로. 보드: 미확인.
+
 ## 시험 요약 (마지막 실행: 처음부터 `rm -rf build && build_all.sh && tests/run_tests.sh`, SVC 경로)
 - 1단계 플러그인: OK (LLVM 18.1.8). 2단계 NS: OK (1/2차 JSON 동일, check_layout OK). 3단계 Secure: OK (veneer 16 개 동일, check_pair 0).
 - 4단계 보드: **실행함** (2026-11-28, 위 "보드 확인"). 1·2·3·5·6 기대와 같음, 4 는 보호 동작 확인 + 기대와 다른 점 2 개 (중단 뒤 복구 없음, 읽기에서 TEIF 없음).
-- 5단계 + 개선 시험: `tests/run_tests.sh` PASS 21 / FAIL 0 (D8/D9 개정 후).
+- 5단계 + 개선 시험: `tests/run_tests.sh` PASS 21 / FAIL 0 (D10 개정 후, pass 단위 19 항목).
 - GCC baseline: `./build.sh` 그대로 (프로젝트 원본 파일 변경 없음. 작업 전부터 있던 `secure_context.c` 공백 수정 1 줄은 건드리지 않음).
 
 ## 결정이 필요한 항목 (사용자)

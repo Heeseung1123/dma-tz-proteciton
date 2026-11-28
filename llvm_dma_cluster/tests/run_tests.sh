@@ -101,37 +101,43 @@ if [ -n "$SB" ]; then
   done
 else echo "SKIP  GCC baseline Secure ELF 없음 (./build.sh 후 다시)"; fi
 
-echo "== T6 cluster 앞 빈 칸 채움 (DMA_FILL): 오른쪽 정렬 cluster + 앞 칸 NS 데이터"
-# 기본 빌드: cluster 2 개 모두 256 B → 앞 칸 없음. 앞 칸은 annotate_ok 변형 (c1 = 304 B → cap 320 B) 으로 본다.
-fill_check() {  # $1 ns.elf, $2 모드 (main | on | off)
+echo "== T6 배치: 앞 칸 채움 + Task A struct head (태그 밖 globals) + Task B cluster 끝 공유 버퍼 (guard 추가 없음)"
+fill_check() {  # $1 ns.elf, $2 모드 (main | ann | off)
   python3 - "$1" "$2" <<'EOF2'
 import sys
 from elftools.elf.elffile import ELFFile
 e = ELFFile(open(sys.argv[1], "rb")); mode = sys.argv[2]
 S = {s.name: (s["st_value"], s["st_size"]) for s in e.get_section_by_name(".symtab").iter_symbols() if s.name}
-DMA = {"s_dmaDstA", "s_dmaDstB", "s_testAnnB"}
-def cl(c): return tuple(S[f"__dmac{c}_{k}"][0] for k in ("pre_start", "pre_end", "start", "end"))
-def objs(lo, hi): return sorted(n for n, (v, z) in S.items() if z and lo <= v < hi and not n.startswith("__"))
+def v(n): return S[n][0]
+def objs(lo, hi): return sorted(n for n, (a, z) in S.items() if z and lo <= a < hi and not n.startswith("__"))
+DMA = {"s_taskA", "s_dmaDstB", "s_dmaShared", "s_testAnnB"}
+# c0 (Task A): pre | s_taskA (head 96 = priv, 태그 밖) | dst 256 (태그) | guard
+assert (v("__dmac0_obj"), v("__dmac0_start"), v("__dmac0_end")) == (0x200180a0, 0x20018100, 0x20018200)
+assert v("s_taskA") == 0x200180a0 and S["s_taskA"][1] == 352
+assert objs(v("__dmac0_start"), v("__dmac0_end")) == [] and objs(v("__dmac0_obj"), v("__dmac0_end")) == ["s_taskA"]
+# c1 (Task B): pre | s_dmaDstB (+ s_testAnnB) | s_dmaShared 64 (guard B 바로 앞) | guard
+assert v("s_dmaShared") == v("__dmac1_shr") == 0x200184c0 and v("__dmac1_end") == 0x20018500
+start1 = 0x200183c0 if mode != "ann" else 0x20018380
+assert v("__dmac1_start") == v("__dmac1_obj") == start1, hex(v("__dmac1_start"))
+assert set(objs(start1, 0x200184c0)) == ({"s_dmaDstB", "s_testAnnB"} if mode == "ann" else {"s_dmaDstB"})
 for c in (0, 1):
-    ps, pe, cs, ce = cl(c)
-    assert set(objs(cs, ce)) <= DMA and objs(cs, ce), (c, objs(cs, ce))
-    assert not (set(objs(ps, cs)) & DMA), (c, objs(ps, cs))
-assert cl(0) == (0x20018000, 0x20018000, 0x20018000, 0x20018100), [hex(x) for x in cl(0)]
-ps, pe, cs, ce = cl(1)
-if mode == "main":
-    assert (ps, pe, cs, ce) == (0x20018200, 0x20018200, 0x20018200, 0x20018300), [hex(x) for x in cl(1)]
-else:
-    assert (ps, cs, ce) == (0x20018200, 0x200182c0, 0x20018400), [hex(x) for x in cl(1)]
-    if mode == "on": assert objs(ps, cs) and pe > ps, objs(ps, cs)
-    else:            assert pe == ps and not objs(ps, cs), objs(ps, cs)
-    print("      c1 앞 칸:", objs(ps, cs), " cluster:", objs(cs, ce))
+    pre = objs(v(f"__dmac{c}_pre_start"), v(f"__dmac{c}_obj"))
+    assert not (set(pre) & DMA), pre
+    if mode == "off": assert pre == [] and v(f"__dmac{c}_pre_end") == v(f"__dmac{c}_pre_start"), pre
+    print(f"      c{c} 앞 칸: {pre}")
+# NS-MPU region (xRegions 의 {base, size} 쌍): A = (priv+dst) + 공유, B = dst+공유 (+ s_privB 는 별도)
+ro = b"".join(x.data() for x in e.iter_sections() if x["sh_type"] == "SHT_PROGBITS" and (x["sh_flags"] & 2) and not (x["sh_flags"] & 1))
+import struct
+w = struct.unpack_from(f"<{len(ro)//4}I", ro[:len(ro)//4*4])
+pairs = {(w[k], w[k+1]) for k in range(len(w)-1)}
+assert (0x200180a0, 0x160) in pairs and (0x200184c0, 0x40) in pairs and (start1, 0x20018500 - start1) in pairs
 EOF2
 }
-fill_check "$B/ns/ns.elf" main && ok "fill main: c0/c1 = 256 B, 앞 칸 없음, cluster 안은 DMA 버퍼만" || bad "fill main: 배치 틀림"
+fill_check "$B/ns/ns.elf" main && ok "layout main: A = [head 96 | dst 256] 태그 0x20018100, B = [dstB | 공유 64 @0x200184c0] guard 0x20018500, region A 2 개" || bad "layout main: 배치 틀림"
 if [ -f "$B/t_annotate_ok/ns/ns.elf" ]; then
-  fill_check "$B/t_annotate_ok/ns/ns.elf" on && ok "fill on: c1 = [0x200182c0,0x20018400), 앞 칸 192 B 에 NS .bss (DMA 버퍼 아님)" || bad "fill on: 배치 틀림"
-else bad "fill on: annotate_ok 빌드 없음"; fi
-if DMA_FILL=off ns_build fill_off "-DDMA_TEST_ANNOTATE_OK"; then
+  fill_check "$B/t_annotate_ok/ns/ns.elf" ann && ok "layout ann: B 전용 버퍼가 늘어도 공유 버퍼는 guard 바로 앞" || bad "layout ann: 배치 틀림"
+else bad "layout ann: annotate_ok 빌드 없음"; fi
+if DMA_FILL=off ns_build fill_off ""; then
   fill_check "$B/t_fill_off/ns/ns.elf" off && ok "fill off: 앞 칸 비움, cluster 위치 동일" || bad "fill off: 배치 틀림"
 else bad "fill off: 빌드 실패 (build/t_fill_off/ns.log)"; fi
 

@@ -82,9 +82,9 @@ void vApplicationStackOverflowHook(xTaskHandle xTask, signed char *pcTaskName)
 #if defined(DMA_HAVE_REGIONS)          /* 2차 빌드: gen_layout.py 가 만든 헤더 */
 #  include "dma_regions.h"
 #else                                  /* 1차 빌드: 자리만 차지 (분석 결과에 영향 없음) */
-#  define DMA_TASK_REGIONS_vDmaTaskA  { 0, 0, 0 }
+#  define DMA_TASK_REGIONS_vDmaTaskA  { 0, 0, 0 }, { 0, 0, 0 }
 #  define DMA_TASK_REGIONS_vDmaTaskB  { 0, 0, 0 }
-#  define DMA_TASK_NREGIONS_vDmaTaskA 1
+#  define DMA_TASK_NREGIONS_vDmaTaskA 2
 #  define DMA_TASK_NREGIONS_vDmaTaskB 1
 #endif
 
@@ -98,22 +98,32 @@ typedef struct
 } dma_task_globals_t;
 
 #define DMA_XFER_LEN        8u
-#define DMA_ATTACK_N        6u
+#define DMA_ATTACK_N        8u
 
 /* 태스크 private = globals + DMA source + 공격 시험 결과. DMA 목적지가 아니므로 cluster 밖. */
 typedef struct
 {
     dma_task_globals_t v;
     uint8_t            src[32];
-    volatile int32_t   attack[DMA_ATTACK_N];  /* DMA_ATTACK_TESTS 결과 (GDB: p s_privA.attack) */
+    volatile int32_t   attack[DMA_ATTACK_N];  /* DMA_ATTACK_TESTS 결과 (GDB: p s_taskA.priv.attack) */
     volatile uint32_t  okCount;               /* 정상 전송 완료 횟수 */
 } __attribute__((aligned(32))) dma_task_priv_t;
 
-static dma_task_priv_t s_privA, s_privB;
+/* Task A: private(globals) 와 DMA 목적지가 코드 구조상 한 struct 에 들어 있는 경우.
+ * 배치 도구가 globals 를 cluster 옆에 놓은 것이 아니라, struct 라서 원래 붙어 있다.
+ * pass 는 dst 필드만 DMA 에 쓰이는 것을 보고 struct 전체를 Task A 블록에 두되,
+ * S-MPU 태그는 dst 부터 (priv 는 태그 밖 head), NS-MPU region 은 priv + dst 를 하나로 덮는다. */
+typedef struct
+{
+    dma_task_priv_t priv;             /* globals: DMA 대상 아님 (96 B) */
+    uint8_t         dst[256];         /* DMA 목적지 — 마지막 필드 (뒤에 guard) */
+} dma_task_a_mem_t;
+static dma_task_a_mem_t s_taskA;      /* → .dma.h.vDmaTaskA */
+static dma_task_priv_t  s_privB;
 
 /* DMA 목적지 버퍼: 평범한 static 전역. 배치는 pass + 생성 링커 스크립트가 정한다. */
-static uint8_t s_dmaDstA[256];        /* Task A 만 → .dma.t.vDmaTaskA */
 static uint8_t s_dmaDstB[256];        /* Task B 만 → .dma.t.vDmaTaskB */
+static uint8_t s_dmaShared[64];       /* A, B 공유 → shared_host = B: Task B cluster 끝 (.dma.x.vDmaTaskB), guard 추가 없음 */
 
 /* ---- 빌드 시험용 변형 (tests/run_tests.sh 가 -D 로 켠다. 기본 빌드에는 없음) ---- */
 #if defined(DMA_TEST_SHIFT)        /* 음성: NS 배치만 바뀐 "stale" 이미지 → Secure 의 guard 결합 불일치 (-7).
@@ -142,16 +152,16 @@ static uint8_t s_testAnnB[48] __attribute__((used, annotate("dma:vDmaTaskB")));
 static uint8_t s_testOvr[32] __attribute__((annotate("dma:vDmaTaskB")));
 #endif
 
-#define DMA_NSMPU_REGIONS(t)  (1 + DMA_TASK_NREGIONS_##t)
-_Static_assert(DMA_NSMPU_REGIONS(vDmaTaskA) <= portNUM_CONFIGURABLE_REGIONS, "Task A NS-MPU regions");
-_Static_assert(DMA_NSMPU_REGIONS(vDmaTaskB) <= portNUM_CONFIGURABLE_REGIONS, "Task B NS-MPU regions");
+/* Task A: (priv + dst) + 공유 = DMA_TASK_REGIONS 만. Task B: s_privB + (dst + 공유) */
+_Static_assert(DMA_TASK_NREGIONS_vDmaTaskA <= portNUM_CONFIGURABLE_REGIONS, "Task A NS-MPU regions");
+_Static_assert(1 + DMA_TASK_NREGIONS_vDmaTaskB <= portNUM_CONFIGURABLE_REGIONS, "Task B NS-MPU regions");
 
 /* Serializes the single Secure DMA channel between tasks (app-level only). */
 static SemaphoreHandle_t s_dmaChannelMutex;
 
 /* Secure DMA ISR writes the result here and pends SECURE_DMA_DOORBELL_IRQn. */
 static volatile uint32_t s_dmaStatusWord;
-static dma_task_priv_t * const s_privs[] = { &s_privA, &s_privB };
+static dma_task_priv_t * const s_privs[] = { &s_taskA.priv, &s_privB };
 
 void DFSDM1_FLT3_IRQHandler(void)
 {
@@ -203,20 +213,24 @@ static int App_DmaM2M(dma_task_globals_t *g, void *src, void *dst, uint32_t len)
 }
 
 #if defined(DMA_ATTACK_TESTS)
-/* 요청 시점 공격 시험 (논문 §4 (a)). Task A 가 시작할 때 한 번 실행, 결과를 s_privA.attack[] 에 남긴다.
- * 기대: [0] 0 (정상), [1]~[5] -1 (거부).
+/* 요청 시점 공격 시험 (논문 §4 (a)). Task A 가 시작할 때 한 번 실행, 결과를 s_taskA.priv.attack[] 에 남긴다.
+ * 기대: [0] 0, [1]~[5] -1, [6] 0, [7] -1.
  * 이 함수의 sink 호출은 의도적으로 "남의 버퍼" 를 넘기므로 pass 분석에서 제외한다
  * (config/dma_config.json "exclude_callers"). noinline 필수: 인라인되면 태스크 함수의 호출로 보인다. */
 __attribute__((noinline)) static void App_DmaAttackTests(dma_task_priv_t *p)
 {
     dma_task_globals_t *g = &p->v;
     xSemaphoreTake(g->dmaMutex, portMAX_DELAY);
-    p->attack[0] = App_DmaM2M(g, p->src, s_dmaDstA, DMA_XFER_LEN);                 /* 정상 */
+    uint8_t *dstA = s_taskA.dst;
+    p->attack[0] = App_DmaM2M(g, p->src, dstA, DMA_XFER_LEN);                      /* 정상 */
     p->attack[1] = App_DmaM2M(g, p->src, s_dmaDstB, DMA_XFER_LEN);                 /* (a-1) 남의 cluster: TTAT */
-    p->attack[2] = App_DmaM2M(g, p->src, p, DMA_XFER_LEN);                         /* (a-2) 자기 globals: TTT */
-    p->attack[3] = App_DmaM2M(g, p->src, s_dmaDstA, sizeof(s_dmaDstA) + 1u);       /* (a-3) 길이가 guard 로 */
-    p->attack[4] = App_DmaM2M(g, p->src, s_dmaDstA + sizeof(s_dmaDstA) - 4u, 8u);  /* (a-4) 끝이 cluster 밖 */
+    p->attack[2] = App_DmaM2M(g, p->src, p, DMA_XFER_LEN);                         /* (a-2) 같은 struct 의 globals:
+                                                                                      NS-MPU 는 허용, S-MPU 태그 밖 → TTT */
+    p->attack[3] = App_DmaM2M(g, p->src, dstA, sizeof(s_taskA.dst) + 1u);          /* (a-3) 길이가 guard 로 */
+    p->attack[4] = App_DmaM2M(g, p->src, dstA + sizeof(s_taskA.dst) - 4u, 8u);     /* (a-4) 끝이 cluster 밖 */
     p->attack[5] = App_DmaM2M(g, p->src, (void *)0x30000000u, DMA_XFER_LEN);       /* (a-5) Secure 주소 */
+    p->attack[6] = App_DmaM2M(g, p->src, s_dmaShared, DMA_XFER_LEN);               /* 공유 버퍼: 정상 */
+    p->attack[7] = App_DmaM2M(g, p->src, s_dmaShared + sizeof(s_dmaShared) - 4u, 8u); /* (a-6) 공유 끝이 guard B 로 */
     xSemaphoreGive(g->dmaMutex);
 }
 #endif
@@ -231,7 +245,7 @@ static StackType_t xPlainTaskStack[ STACK_SIZE_WORDS ] __attribute__((aligned(32
 static void vDmaTaskA( void *pvParameters )
 {
   (void)pvParameters;
-  dma_task_priv_t *p = &s_privA;
+  dma_task_priv_t *p = &s_taskA.priv;
   for (uint32_t i = 0; i < sizeof(p->src); i++) { p->src[i] = (uint8_t)i; }
 
 #if defined(DMA_ATTACK_TESTS)
@@ -241,7 +255,11 @@ static void vDmaTaskA( void *pvParameters )
   for( uint32_t n = 0;; n++ )
   {
     xSemaphoreTake(p->v.dmaMutex, portMAX_DELAY);
-    if (App_DmaM2M(&p->v, p->src, s_dmaDstA, DMA_XFER_LEN) == 0) { p->okCount++; }
+    if (App_DmaM2M(&p->v, p->src, s_taskA.dst, DMA_XFER_LEN) == 0) { p->okCount++; }
+    if ((n & 3u) == 0u)
+    {
+      (void)App_DmaM2M(&p->v, p->src, s_dmaShared, DMA_XFER_LEN);
+    }
 #if defined(DMA_TEST_OVERRIDE)
     (void)App_DmaM2M(&p->v, p->src, s_testOvr, DMA_XFER_LEN);
 #endif
@@ -261,6 +279,10 @@ static void vDmaTaskB( void *pvParameters )
   {
     xSemaphoreTake(p->v.dmaMutex, portMAX_DELAY);
     if (App_DmaM2M(&p->v, p->src, s_dmaDstB, DMA_XFER_LEN) == 0) { p->okCount++; }
+    if ((n & 3u) == 2u)
+    {
+      (void)App_DmaM2M(&p->v, p->src, s_dmaShared + 32, DMA_XFER_LEN);
+    }
 #if defined(DMA_TEST_STACK_BUF)    /* 음성: 지역(스택) 배열을 DMA 목적지로 */
     {
       uint8_t local[8];
@@ -302,8 +324,7 @@ static const TaskParameters_t xDmaTaskAParams =
   .puxStackBuffer = xDmaTaskAStack,
   .xRegions =
   {
-    { &s_privA, sizeof( s_privA ), portMPU_REGION_READ_WRITE },   /* globals + src (cluster 밖) */
-    DMA_TASK_REGIONS_vDmaTaskA                                     /* 전용 cluster */
+    DMA_TASK_REGIONS_vDmaTaskA      /* (s_taskA.priv + s_taskA.dst) 1 개 + 공유 버퍼 1 개 */
   }
 };
 
@@ -317,8 +338,8 @@ static const TaskParameters_t xDmaTaskBParams =
   .puxStackBuffer = xDmaTaskBStack,
   .xRegions =
   {
-    { &s_privB, sizeof( s_privB ), portMPU_REGION_READ_WRITE },
-    DMA_TASK_REGIONS_vDmaTaskB
+    { &s_privB, sizeof( s_privB ), portMPU_REGION_READ_WRITE },   /* globals (cluster 밖) */
+    DMA_TASK_REGIONS_vDmaTaskB                                     /* s_dmaDstB + 끝 공유 버퍼 1 개 */
   }
 };
 
@@ -343,7 +364,7 @@ void vCreateAppTasks( void )
 {
   s_dmaChannelMutex = xSemaphoreCreateMutex();
   configASSERT(s_dmaChannelMutex != NULL);
-  s_privA.v.dmaMutex = s_dmaChannelMutex;
+  s_taskA.priv.v.dmaMutex = s_dmaChannelMutex;
   s_privB.v.dmaMutex = s_dmaChannelMutex;
 
   int initRes = SECURE_dma_m2m_init((void *)&s_dmaStatusWord);
@@ -355,7 +376,7 @@ void vCreateAppTasks( void )
   TaskHandle_t hDmaTaskA = NULL, hDmaTaskB = NULL;
   xTaskCreateRestricted( &xDmaTaskAParams, &hDmaTaskA );
   xTaskCreateRestricted( &xDmaTaskBParams, &hDmaTaskB );
-  s_privA.v.hTask = hDmaTaskA;
+  s_taskA.priv.v.hTask = hDmaTaskA;
   s_privB.v.hTask = hDmaTaskB;
   vGrantAccessToSemaphore( hDmaTaskA, s_dmaChannelMutex );
   vGrantAccessToSemaphore( hDmaTaskB, s_dmaChannelMutex );

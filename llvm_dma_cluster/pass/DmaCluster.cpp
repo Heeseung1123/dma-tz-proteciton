@@ -16,6 +16,10 @@
 //       - 2개+ → section ".dma.s.<k>"      (공유 cluster, owner 집합별 하나)
 //     __attribute__((annotate("dma:<task>"))) / annotate("dma:shared:<name>")
 //     는 자동 판정보다 우선한다.
+//     - 설정 "shared_host": {"<owner1>,<owner2>": "<host>"} 이면 그 공유 버퍼는 따로 cluster 를
+//       만들지 않고 host 태스크 cluster 의 끝(guard 바로 앞)에 둔다 → section ".dma.x.<host>"
+//     - 구조체 전역의 필드만 DMA 에 쓰이면 (예: struct { globals; dst[]; }) 그 필드부터가 cluster
+//       (S-MPU 태그) 이고 앞 필드는 태그 밖 "head" 로 둔다 → section ".dma.h.<task>"
 //  5) 결과를 JSON(dma_layout.json)으로 기록 → gen_layout.py 가 링커 스크립트,
 //     manifest, NS-MPU region 헤더를 생성
 //
@@ -30,7 +34,9 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DebugInfoMetadata.h"
+#include "llvm/IR/GetElementPtrTypeIterator.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/InstIterator.h"
@@ -77,6 +83,8 @@ struct Config {
   // 이 함수들 안의 sink 호출은 분석하지 않는다 (의도적으로 남의 버퍼를 넘기는 공격 시험 등).
   // 인자 역추적도 이 함수들의 호출 위치로는 올라가지 않는다. 함수는 noinline 이어야 한다.
   std::set<std::string> ExcludeCallers;
+  // 공유 버퍼 owner 집합 ("A,B", 이름 순) → host 태스크: host cluster 끝에 붙인다 (guard 추가 없음)
+  std::map<std::string, std::string> SharedHost;
   std::string Out = "dma_layout.json";
   bool Ok = false;
 };
@@ -124,6 +132,10 @@ static Config loadConfig() {
     for (const json::Value &V : *A)
       if (auto S = V.getAsString())
         C.ExcludeCallers.insert(S->str());
+  if (const json::Object *H = O->getObject("shared_host"))
+    for (const auto &KV : *H)
+      if (auto S = KV.second.getAsString())
+        C.SharedHost[KV.first.str()] = S->str();
   if (const json::Array *A = O->getArray("sinks"))
     for (const json::Value &V : *A)
       if (const json::Object *S = V.getAsObject()) {
@@ -213,6 +225,8 @@ struct BufInfo {
   std::set<std::string> AutoOwners; // 자동 판정
   std::string Forced;               // annotate 결과 ("" = 없음)
   std::set<std::string> Sites;      // sink 호출 위치
+  std::set<unsigned> Fields;        // 구조체 전역: DMA 에 쓰인 최상위 필드 번호
+  bool Whole = false;               // 구조체 전역: 필드를 알 수 없는 사용 (구조체 전체가 DMA 대상)
 };
 
 struct State {
@@ -345,8 +359,41 @@ static bool isHeapCall(const Value *V, const Config &C) {
   return false;
 }
 
+// V 가 가리키는 곳의 G 시작 기준 바이트 오프셋. 가변 인덱스가 섞이면 G 에 붙은 GEP 의 상수 앞부분까지
+// (예: &s.dst[i] → dst 필드 시작). 알 수 없으면 nullopt.
+static std::optional<uint64_t> offsetInto(const Value *V, const GlobalVariable *G,
+                                          const DataLayout &DL) {
+  for (unsigned Depth = 0; V && Depth < 16; ++Depth) {
+    APInt Off(DL.getIndexTypeSizeInBits(V->getType()), 0);
+    const Value *B = V->stripAndAccumulateConstantOffsets(DL, Off, /*AllowNonInbounds=*/true);
+    if (B == G)
+      return Off.getZExtValue();
+    auto *GEP = dyn_cast<GEPOperator>(B); // 가변 인덱스 GEP: 기준 포인터 쪽 + 상수 앞부분
+    if (!GEP)
+      return std::nullopt;
+    APInt Base(DL.getIndexTypeSizeInBits(GEP->getType()), 0);
+    const Value *P = GEP->getPointerOperand()->stripAndAccumulateConstantOffsets(DL, Base, true);
+    if (P != G) {
+      V = GEP->getPointerOperand();
+      continue;
+    }
+    uint64_t Acc = Base.getZExtValue();
+    for (gep_type_iterator GTI = gep_type_begin(GEP), E = gep_type_end(GEP); GTI != E; ++GTI) {
+      auto *CI = dyn_cast<ConstantInt>(GTI.getOperand());
+      if (!CI)
+        break;
+      if (StructType *ST = GTI.getStructTypeOrNull())
+        Acc += DL.getStructLayout(ST)->getElementOffset(CI->getZExtValue());
+      else
+        Acc += CI->getSExtValue() * DL.getTypeAllocSize(GTI.getIndexedType());
+    }
+    return Acc; // 가변 GEP 뒤의 상수(Off)는 같은 필드 안 → 필드 판정에 쓰지 않음
+  }
+  return std::nullopt;
+}
+
 static void recordGlobal(State &S, GlobalVariable &G, StringRef Task,
-                         const CallBase &Site) {
+                         const CallBase &Site, const Value *V = nullptr) {
   if (G.isConstant()) // Flash 상수: DMA source 로만 쓰임 → 배치 대상 아님
     return;
   if (G.isDeclaration()) {
@@ -364,6 +411,15 @@ static void recordGlobal(State &S, GlobalVariable &G, StringRef Task,
   BufInfo &B = S.Bufs[&G];
   B.AutoOwners.insert(Task.str());
   B.Sites.insert(locOf(Site));
+  if (auto *ST = dyn_cast<StructType>(G.getValueType())) {
+    const DataLayout &DL = S.M.getDataLayout();
+    std::optional<uint64_t> Off = V ? offsetInto(V, &G, DL) : std::nullopt;
+    const StructLayout *SL = DL.getStructLayout(ST);
+    if (Off && *Off < SL->getSizeInBytes())
+      B.Fields.insert(SL->getElementContainingOffset(*Off));
+    else
+      B.Whole = true;
+  }
 }
 
 static void trace(State &S, const Value *V, StringRef Task, const FnSet &R,
@@ -377,11 +433,8 @@ static void trace(State &S, const Value *V, StringRef Task, const FnSet &R,
 
   if (auto *G = dyn_cast<GlobalVariable>(O)) {
     // 전역 "포인터 변수"를 거쳐 넘긴 경우는 아래 LoadInst 에서 처리된다.
-    if (G->getValueType()->isStructTy() && V != O)
-      S.diag("struct-field", "warning", Task, &Site,
-             (G->getName() + ": 구조체 일부가 DMA 버퍼 → 구조체 전체를 배치")
-                 .str());
-    recordGlobal(S, *const_cast<GlobalVariable *>(G), Task, Site);
+    // 구조체면 어느 필드인지 기록 → 5) 에서 head(태그 밖 앞 필드) 결정
+    recordGlobal(S, *const_cast<GlobalVariable *>(G), Task, Site, V);
     return;
   }
   if (auto *A = dyn_cast<Argument>(O)) { // 호출자로 거슬러 올라감 (context = Task)
@@ -681,6 +734,7 @@ struct DmaClusterPass : PassInfoMixin<DmaClusterPass> {
     // 5) cluster 결정과 section 부여
     //    key: "t:<task>" (전용) / "s:<owner1,owner2,..>" 또는 "s:<name>" (공유)
     std::map<std::string, std::vector<GlobalVariable *>> Clusters;
+    std::set<GlobalVariable *> Hosted; // shared_host 로 host cluster 끝에 붙는 공유 버퍼
     for (auto &[G, B] : S.Bufs) {
       std::string Key;
       if (!B.Forced.empty()) {
@@ -693,6 +747,17 @@ struct DmaClusterPass : PassInfoMixin<DmaClusterPass> {
         for (const std::string &O : B.AutoOwners)
           J += (J.empty() ? "" : ",") + O;
         Key = "s:" + J;
+        auto H = Cfg.SharedHost.find(J);
+        if (H != Cfg.SharedHost.end()) {
+          if (B.AutoOwners.count(H->second)) {
+            Key = "t:" + H->second;
+            Hosted.insert(G);
+          } else {
+            S.diag("shared-host", "warning", H->second, nullptr,
+                   (G->getName() + ": shared_host '" + H->second + "' 가 owner {" + J +
+                    "} 에 없음 → 별도 공유 cluster").str());
+          }
+        }
       } else {
         continue; // annotate 만 있고 사용처 없는 경우가 아니면 도달하지 않음
       }
@@ -708,36 +773,93 @@ struct DmaClusterPass : PassInfoMixin<DmaClusterPass> {
     json::Array JClusters;
     unsigned SharedIdx = 0;
     bool Changed = false;
+    const DataLayout &DLc = DL;
+    // 구조체 전역의 head: DMA 필드 중 가장 앞 필드의 오프셋 (그 앞 필드 = 태그 밖, 같은 NS-MPU region)
+    auto headOf = [&](GlobalVariable *G, StringRef Task) -> uint64_t {
+      auto *ST = dyn_cast<StructType>(G->getValueType());
+      const BufInfo &B = S.Bufs[G];
+      if (!ST || B.Whole || B.Fields.empty() || !B.Forced.empty())
+        return 0;
+      unsigned Min = *B.Fields.begin();
+      const StructLayout *SL = DLc.getStructLayout(ST);
+      uint64_t Off = SL->getElementOffset(Min);
+      if (Off == 0)
+        return 0;
+      if (Off % 32) {
+        S.diag("struct-field-align", "error", Task, nullptr,
+               formatv("{0}: DMA 필드 {1} 의 오프셋 {2} 가 32 B 정렬이 아님 (S-MPU 태그 시작)",
+                       G->getName(), Min, Off).str());
+        return 0;
+      }
+      for (unsigned K = Min + 1; K < ST->getNumElements(); ++K)
+        if (!B.Fields.count(K) && DLc.getTypeAllocSize(ST->getElementType(K)))
+          S.diag("struct-field-tail", "warning", Task, nullptr,
+                 formatv("{0}: 필드 {1} 은 DMA 에 쓰이지 않지만 DMA 필드 뒤에 있어 S-MPU 태그 안에 들어감",
+                         G->getName(), K).str());
+      S.diag("struct-field", "warning", Task, nullptr,
+             formatv("{0}: 필드 {1} (오프셋 {2}) 부터 DMA 버퍼 → 앞 {2} B 는 태그 밖 head, 구조체는 한 덩어리로 배치",
+                     G->getName(), Min, Off).str());
+      return Off;
+    };
     for (auto &[Key, Gs] : Clusters) { // std::map → 결정적 순서
       bool Shared = StringRef(Key).starts_with("s:");
       std::string Id = Shared ? ("s" + std::to_string(SharedIdx++))
                               : ("t." + Key.substr(2));
       std::string Sec = Shared ? (".dma.s." + std::to_string(SharedIdx - 1))
                                : (".dma.t." + Key.substr(2));
-      json::Array JBufs, JOwners;
-      std::set<std::string> Owners;
-      uint64_t Bound = 0;
+      std::string HeadSec = ".dma.h." + Key.substr(2), HostedSec = ".dma.x." + Key.substr(2);
+      json::Array JBufs, JOwners, JHostedOwners;
+      std::set<std::string> Owners, HostedOwners;
+      uint64_t Bound = 0, Head = 0, HostedBound = 0;
+      std::string HeadName;
       for (GlobalVariable *G : Gs) {
         if (G->hasCommonLinkage()) // common 심볼은 section 을 가질 수 없음
           G->setLinkage(GlobalValue::ExternalLinkage);
-        G->setSection(Sec);
-        Changed = true;
         uint64_t Sz = DL.getTypeAllocSize(G->getValueType());
         uint64_t Al = G->getAlign() ? G->getAlign()->value()
                                     : DL.getPreferredAlign(G).value();
-        Bound += Sz + (Al > 1 ? Al - 1 : 0); // 정렬 패딩 상한 포함
         const BufInfo &B = S.Bufs[G];
+        bool IsHosted = Hosted.count(G);
+        uint64_t H = (Shared || IsHosted) ? 0 : headOf(G, Key.substr(2));
+        if (H && Head) {
+          S.diag("struct-head-multi", "error", Key.substr(2), nullptr,
+                 (G->getName() + ": 한 cluster 에 head 를 가진 구조체가 둘 (" + HeadName + ")").str());
+          H = 0;
+        }
+        std::string GSec = Sec;
+        if (H) {
+          Head = H;
+          HeadName = G->getName().str();
+          GSec = HeadSec;
+          Bound += Sz - H;               // 첫 객체: 정렬 패딩 없음
+        } else if (IsHosted) {
+          GSec = HostedSec;
+          HostedBound += Sz + (Al > 1 ? Al - 1 : 0);
+          for (const std::string &O : B.AutoOwners)
+            if (O != Key.substr(2))
+              HostedOwners.insert(O);
+        } else {
+          Bound += Sz + (Al > 1 ? Al - 1 : 0); // 정렬 패딩 상한 포함
+        }
+        G->setSection(GSec);
+        Changed = true;
         // 태스크 전용(annotate 포함): owner = 그 태스크 하나. 공유: 실제 사용 태스크들.
         if (Shared)
           for (const std::string &O : B.AutoOwners)
             Owners.insert(O);
-        json::Array Sites;
+        json::Array Sites, JOw;
         for (const std::string &L : B.Sites)
           Sites.push_back(L);
+        for (const std::string &O : B.AutoOwners)
+          JOw.push_back(O);
         JBufs.push_back(json::Object{{"name", G->getName().str()},
                                      {"size", static_cast<int64_t>(Sz)},
                                      {"align", static_cast<int64_t>(Al)},
                                      {"forced", B.Forced},
+                                     {"section", GSec},
+                                     {"head", static_cast<int64_t>(H)},
+                                     {"hosted", IsHosted},
+                                     {"users", std::move(JOw)},
                                      {"sites", std::move(Sites)}});
       }
       if (!Shared)
@@ -747,11 +869,20 @@ struct DmaClusterPass : PassInfoMixin<DmaClusterPass> {
                "공유 cluster 를 쓰는 태스크가 분석되지 않음 → 어느 태스크 NS-MPU 에도 들어가지 않음");
       for (const std::string &O : Owners)
         JOwners.push_back(O);
+      for (const std::string &O : HostedOwners)
+        JHostedOwners.push_back(O);
       JClusters.push_back(json::Object{{"id", Id},
                                        {"section", Sec},
+                                       {"head_section", HeadSec},
+                                       {"hosted_section", HostedSec},
                                        {"kind", Shared ? "shared" : "task"},
                                        {"owners", std::move(JOwners)},
-                                       {"bytes_bound", static_cast<int64_t>(Bound)},
+                                       {"head", static_cast<int64_t>(Head)},
+                                       {"head_buffer", HeadName},
+                                       {"body_bound", static_cast<int64_t>(Bound)},
+                                       {"hosted_bound", static_cast<int64_t>(HostedBound)},
+                                       {"hosted_owners", std::move(JHostedOwners)},
+                                       {"bytes_bound", static_cast<int64_t>(Head + Bound + HostedBound)},
                                        {"buffers", std::move(JBufs)}});
     }
 

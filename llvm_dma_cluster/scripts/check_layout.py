@@ -34,10 +34,20 @@ def main() -> int:
         if e % 256: bad.append(f"c{i}: guard {e:#x} 256B 비정렬")
         if not (NS_SRAM[0] <= s and g <= NS_SRAM[1]): bad.append(f"c{i}: NS SRAM 밖")
         spans.append((s, g, c["id"]))
+        o = syms[f"__dmac{i}_obj"][0]
+        if o % 32: bad.append(f"c{i}: obj {o:#x} 32B 비정렬")
+        if s - o != int(c.get("head", 0)): bad.append(f"c{i}: head {s - o:#x} != pass {c.get('head', 0)}")
         for b in c["buffers"]:
             a = addr(b["name"])
             if a is None:
                 bad.append(f"c{i}: 심볼 {b['name']} 없음")
+            elif b.get("head"):          # 구조체: 시작 = obj, DMA 필드부터 = 태그 시작
+                if a[0] != o or a[0] + b["head"] != s or a[0] + b["size"] > e:
+                    bad.append(f"c{i}: head 구조체 {b['name']} @ {a[0]:#x} (obj {o:#x}, start {s:#x})")
+            elif b.get("hosted"):        # host 된 공유 버퍼: guard 바로 앞 칸 [shr, end)
+                r = syms[f"__dmac{i}_shr"][0]
+                if not (r <= a[0] and a[0] + b["size"] <= e):
+                    bad.append(f"c{i}: 공유 {b['name']} @ {a[0]:#x} 가 [{r:#x},{e:#x}) 밖")
             elif not (s <= a[0] and a[0] + b["size"] <= e):
                 bad.append(f"c{i}: {b['name']} @ {a[0]:#x} 가 [{s:#x},{e:#x}) 밖")
         print(f"c{i} {c['id']:20s} cluster [{s:#010x},{e:#010x}) guard [{e:#010x},{g:#010x})")
@@ -59,13 +69,25 @@ def main() -> int:
     ro = b"".join(x.data() for x in elf.iter_sections()
                   if x["sh_type"] == "SHT_PROGBITS" and (x["sh_flags"] & 2) and not (x["sh_flags"] & 1))
     words = struct.unpack_from(f"<{len(ro) // 4}I", ro[: len(ro) // 4 * 4])
+    def nreg(base, size):
+        return sum(1 for k in range(len(words) - 1) if words[k] == base and words[k + 1] == size)
     for i, c in enumerate(lay["clusters"]):
-        s = syms[f"__dmac{i}_start"][0]
-        cap = syms[f"__dmac{i}_end"][0] - s
-        n = sum(1 for k in range(len(words) - 1) if words[k] == s and words[k + 1] == cap)
+        o = syms[f"__dmac{i}_obj"][0]
+        size = syms[f"__dmac{i}_end"][0] - o          # head + cluster
+        n = nreg(o, size)
         if n != len(c["owners"]):
-            bad.append(f"c{i}: NS-MPU region {{{s:#x}, {cap:#x}}} 이 {n} 개 (owner {len(c['owners'])} 개 기대)")
-    waste = sum(syms[f"__dmac{i}_end"][0] - syms[f"__dmac{i}_fill"][0] for i in range(len(lay["clusters"])))
+            bad.append(f"c{i}: NS-MPU region {{{o:#x}, {size:#x}}} 이 {n} 개 (owner {len(c['owners'])} 개 기대)")
+        if c.get("hosted_bound"):
+            r = syms[f"__dmac{i}_shr"][0]
+            n = nreg(r, syms[f"__dmac{i}_end"][0] - r)
+            if n != len(c.get("hosted_owners", [])):
+                bad.append(f"c{i}: 공유 NS-MPU region {{{r:#x}}} 이 {n} 개 (hosted owner {len(c['hosted_owners'])} 개 기대)")
+    def unused(i):
+        f, e = syms[f"__dmac{i}_fill"][0], syms[f"__dmac{i}_end"][0]
+        if f"__dmac{i}_shr" in syms:   # 전용 버퍼 끝 ~ 공유 칸 시작 + 공유 칸 끝 ~ guard
+            return syms[f"__dmac{i}_shr"][0] - f + e - syms[f"__dmac{i}_shr_fill"][0]
+        return e - f
+    waste = sum(unused(i) for i in range(len(lay["clusters"])))
     print(f"cluster 안 미사용 {waste} B (256 B 올림), guard {256 * len(lay['clusters'])} B")
 
     sec = elf.get_section_by_name(".dma_manifest")
