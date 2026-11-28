@@ -114,7 +114,7 @@ S-MPU 태그 방식이 테이블 방식보다 평균 63 사이클(약 28%) 빠�
 
 ## 측정 결과
 
-**보안·보호 평가는 아직 수행하지 않았습니다.** 아래는 사이클 측정이고, 공격 시나리오 재현과 negative test는 다음 단계입니다.
+**보안·보호 평가는 `llvm_dma_cluster/` 하네스 이미지에서만 수행했습니다** (아래 "전송 시점 보호"). 프로젝트 본 이미지에서 공격 시나리오를 재현하고 negative test 를 하는 것은 다음 단계입니다.
 
 ### 중재자 사이클
 8바이트 M2M, N=1000, Task A, DMA IRQ 차단. 값은 min / avg / max이고, max는 1ms 틱 인터럽트가 끼어든 표본입니다. 전체 표와 정의는 [`results/report.md`](results/report.md)에 있습니다.
@@ -163,8 +163,39 @@ D-Box 값은 [`docs/dbox_reference.md`](docs/dbox_reference.md)에 정리했습�
 
 context switch 증가는 secure context를 쓰는 태스크, 즉 NSC를 호출하는 DMA 태스크에 해당합니다.
 
+### 전송 시점 보호: 채널이 멈추기까지 guard 에 닿은 양 (보드 실측)
+가드 블록은 "닿는 순간 막는 벽"이 아닙니다. TZIC 인터럽트가 걸리고 `GTZC_IRQHandler` 가 `CCR.EN = 0` 을 쓸 때까지, DMA 는 몇 beat 를 더 진행합니다. 그 양을 재어 두었습니다.
+
+- 측정 이미지: `llvm_dma_cluster/` 하네스 빌드. SVC 중재자, `GTZC_IRQHandler` 복구(D8)와 TZIC 로그(D11) 포함, 커밋 `77f6895`.
+- 방법: 중재자가 `CCR.EN = 1` 을 쓰기 직전에 GDB 로 멈추고, CNDTR 이나 CPAR 를 바꿉니다. 검증을 통과한 뒤 전송 길이와 주소를 변조하는 공격(논문 §4 (b))을 흉내 낸 것입니다.
+- 남은 CNDTR 는 핸들러가 채널을 멈춘 직후 guard 안 TZIC 로그(`g_tzic_log<k>.ev[].cndtr`)에 기록됩니다.
+- 전송 폭은 8-bit 이므로 1 beat = 1 B 입니다 (CCR `0x260cb`).
+- 클럭과 캐시는 프로젝트 기본값(110 MHz, ICACHE off)이며, 이 실행에서 따로 재지는 않았습니다.
+
+| 시험 | 설정한 길이 | 실제 전송 | **guard 에 닿은 양** | guard 너머 | 결과 |
+|---|---|---|---|---|---|
+| 쓰기: Task A cluster(256 B) → guard A | 528 B | 260 B (CNDTR 268 남음) | **4 B** (쓰기 무시) | 무변조 | 채널 정지, NS 에 −2, 시스템 계속 |
+| 쓰기: 공유 버퍼(64 B) → guard B | 336 B | 68 B (CNDTR 268 남음) | **4 B** (쓰기 무시) | 무변조 | 같음 |
+| 읽기: src = guard A 시작 | 16 B | 10 B (CNDTR 6 남음) | **10 B** (모두 0 으로 읽힘, RAZ) | — | 같음. TEIF 없음 |
+| (참고) 쓰기, 복구 코드 전 이미지 | 528 B | 260 B | 4 B | 무변조 | 채널은 멈췄지만 태스크 영구 대기 |
+| (참고) 읽기, 복구 코드 전 이미지 | 16 B | 8 B | 8 B (RAZ) | — | 같음 |
+
+**왜 중요한가**
+- **guard 크기의 근거입니다.** 이번 측정에서 DMA 는 guard 안으로 쓰기 4 B, 읽기 8–10 B 를 더 진행하고 멈췄습니다. 256 B guard 는 이 창보다 훨씬 커서, 넘친 전송이 guard 를 지나 다음 데이터에 닿기 전에 멈춥니다 [실측, 이 조건에서].
+- **guard 에 Secure 데이터를 둬도 되는 근거입니다.** 그 몇 beat 동안 쓰기는 MPCBB 가 무시하고, 읽기는 0 을 받습니다. 그래서 guard 안 Secure 객체(TZIC 로그)는 바뀌지도 새지도 않습니다 [실측].
+- **읽기와 쓰기 모두 TZIC 로 멈춥니다.** 읽기에서도 TEIF(bus error)는 나지 않았습니다. CLAUDE.md 의 "읽기 → TEIF" 와 다르며 확인을 기다리고 있습니다 (`llvm_dma_cluster/VERIFY_LOG.md` D7).
+
+**이 창의 크기를 바꿀 수 있는 것 [추정, 미측정]**
+- 핸들러 진입 지연: 우선순위 0 이라도 더 높은 예외나 PRIMASK 구간이 있으면 늘어납니다.
+- `CCR.EN = 0` 앞의 명령 수: Secure 는 -O0 입니다.
+- 전송 폭(16/32-bit 면 beat 당 바이트 증가), 버스 클럭과 플래시 대기, 다른 bus master 와의 경합.
+- 최악값은 이런 부하를 건 상태에서 다시 재야 합니다.
+
+자세한 기록: `llvm_dma_cluster/resultMemoryAuto.md` §1, `llvm_dma_cluster/VERIFY_LOG.md` (보드 확인, D8, D11).
+
 ### 미측정
-P0(전부 -O0), 디버거 비연결 상태의 CYCCNT 검증, M3 대 M33 코어 차이, 실제 주변장치(USART, SPI, I2C, ADC) DMA, 메모리 오버헤드, CPU 사용률.
+P0(전부 -O0), 디버거 비연결 상태의 CYCCNT 검증, M3 대 M33 코어 차이, 실제 주변장치(USART, SPI, I2C, ADC) DMA, CPU 사용률, 부하 상태에서 guard 창의 최악값.
+메모리 오버헤드는 자동 배치 하네스에서만 쟀습니다 (`llvm_dma_cluster/resultMemoryAuto.md`).
 
 ## 빌드
 
