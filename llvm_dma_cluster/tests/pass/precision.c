@@ -21,6 +21,18 @@ void attack(void) { SINK(0, bufB, 4); }                    /* exclude_callers */
 void taskA(void *p) { (void)p; helper(bufA); helper(bufShared); SINK(0, gp, 4); attack(); }
 void taskB(void *p) { struct ctx *c = p; helper(bufB); helper(bufShared + 8); SINK(0, c->dst, 4); }
 void taskH(void *p) { (void)p; SINK(0, pvPortMalloc(8), 8); }
+/* SVC sink (config: "svc": 110, args = 레지스터 [1]). 원본 App_DmaStartSvc 형태와 리터럴 형태, 다른 번호(111)는 무시 */
+static unsigned char bufV[8], bufV2[8], bufNo[8];
+#define SVC_N(num, d) do { register unsigned r0 __asm("r0") = 0; register unsigned r1 __asm("r1") = (unsigned)(d); \
+    register unsigned r2 __asm("r2") = 4; __asm volatile ("svc %[n]" : "+r"(r0) : "r"(r1), "r"(r2), [n] "i"(num) : "memory"); } while (0)
+void taskV(void *p)
+{
+    (void)p;
+    SVC_N(110, bufV);
+    SVC_N(111, bufNo);
+    register unsigned r1 __asm("r1") = (unsigned)bufV2;
+    __asm volatile ("svc #110" :: "r"(r1) : "r0", "memory");
+}
 void taskS(void *p) { unsigned char l[4]; (void)p; SINK(0, l, 4); SINK(0, bufTest, 4); }
 
 void init(void)
@@ -32,4 +44,5 @@ void init(void)
     xTaskCreate(taskH, "H", 128, 0, 1, 0);
     xTaskCreate(taskS, "S", 128, 0, 1, 0);
     xTaskCreate(timerTask, "T", 128, 0, 1, 0);
+    xTaskCreate(taskV, "V", 128, 0, 1, 0);
 }

@@ -167,7 +167,7 @@ int main(void)
   /*************** Setup and jump to non-secure *******************************/
 
 #if !defined(MEDIATOR_INSECURE)
-  /* llvm_dma_cluster: NS manifest → S-MPU 태그 + MPCBB guard + landing pad (+ guard 의 Secure 데이터 검증).
+  /* llvm_dma_cluster: NS manifest → S-MPU 태그 + MPCBB guard (+ guard 의 Secure 데이터 검증).
    * 0 이 아니면 (manifest 오류, -7 = NS/Secure 이미지 불일치) NS 로 가지 않는다 (fail-closed). */
   g_dma_boot_status = dma_boot_config();
   if (g_dma_boot_status != 0)

@@ -73,8 +73,10 @@ void vApplicationStackOverflowHook(xTaskHandle xTask, signed char *pcTaskName)
  * 스크립트가 cluster(256B 정렬) + 바로 뒤 MPCBB guard 256B 로 배치한다. 주소 하드코딩 없음.
  *   - 태스크 전역(globals)과 DMA source 는 태스크 private 구조체 하나 = NS-MPU region 1 개
  *   - 태스크 전용 cluster / 공유 cluster 의 NS-MPU region 은 생성된 dma_regions.h 가 준다
- * 기존 원본의 MEDIATOR_INSECURE / DMA_NOTIFY_BLXNS / SVC / BENCH_PHASE 변형은 이 판에 없다.
- * Mediator = secure_dma_entry.S 의 SECURE_dma_m2m_start (assembly, atomic, landing pad). */
+ * 기존 원본의 MEDIATOR_INSECURE / DMA_NOTIFY_BLXNS / BENCH_PHASE 변형은 이 판에 없다.
+ * Mediator = 원본과 같은 SVC 경로: svc #portSVC_DMA_M2M_START → NS SVC_Handler fast path (portasm.c)
+ * → Handler mode 에서 SECURE_dma_m2m_start_svc (secure_nsc.c, asm). Secure 실행 중 예외 프레임은 MSP_S 에
+ * 쌓이므로 DMA 태스크에 Secure context(Secure 스택)가 필요 없다. */
 
 #include "secure_nsc.h"
 #if defined(DMA_HAVE_REGIONS)          /* 2차 빌드: gen_layout.py 가 만든 헤더 */
@@ -115,8 +117,9 @@ static uint8_t s_dmaDstB[256];        /* Task B 만 → .dma.t.vDmaTaskB */
 static uint8_t s_dmaShared[64];       /* A, B 둘 다 → 공유 cluster .dma.s.0 */
 
 /* ---- 빌드 시험용 변형 (tests/run_tests.sh 가 -D 로 켠다. 기본 빌드에는 없음) ---- */
-#if defined(DMA_TEST_SHIFT)        /* 음성: NS 배치만 바뀐 "stale" 이미지 → Secure 의 guard 결합 불일치 (-7) */
-static uint8_t s_testShift[256] __attribute__((used, annotate("dma:vDmaTaskA")));
+#if defined(DMA_TEST_SHIFT)        /* 음성: NS 배치만 바뀐 "stale" 이미지 → Secure 의 guard 결합 불일치 (-7).
+                                    * cluster 0 (공유 {A,B}, key = 소유자 목록) 을 키워 모든 guard 를 옮긴다. */
+static uint8_t s_testShift[256] __attribute__((used, annotate("dma:shared:vDmaTaskA,vDmaTaskB")));
 #endif
 #if defined(DMA_TEST_BAD_INIT)     /* 음성: 초기값 있는 annotate 버퍼 → NOLOAD cluster 에 둘 수 없음 */
 static uint8_t s_testBadInit[16] __attribute__((used, annotate("dma:vDmaTaskA"))) = { 1 };
@@ -170,13 +173,26 @@ void DFSDM1_FLT3_IRQHandler(void)
     portYIELD_FROM_ISR(woken);
 }
 
+#if configDMA_MEDIATOR_SVC != 1
+#error "llvm_dma_cluster: SVC mediator 경로 (configDMA_MEDIATOR_SVC = 1) 가 필요"
+#endif
+/* 원본 app_freertos.c 의 App_DmaStartSvc 그대로 (cmpAsmMediator.md §9). */
+static inline int App_DmaStartSvc(void *src, void *dst, uint32_t len)
+{
+    register uint32_t r0 __asm("r0") = (uint32_t)src;
+    register uint32_t r1 __asm("r1") = (uint32_t)dst;
+    register uint32_t r2 __asm("r2") = len;
+    __asm volatile ("svc %[n]" : "+r"(r0) : "r"(r1), "r"(r2), [n] "i"(portSVC_DMA_M2M_START) : "memory");
+    return (int)r0;
+}
+
 /* One M2M transfer through the Secure mediator; returns after completion (0) or on reject (-1).
  * Caller holds the DMA mutex. (DMA sink: config/dma_config.json 의 App_DmaM2M args [2]) */
 static int App_DmaM2M(dma_task_globals_t *g, void *src, void *dst, uint32_t len)
 {
     g->dmaDone    = 0u;
     g->dmaPending = 1u;          /* set before start: the ISR may run right after EN */
-    int r = SECURE_dma_m2m_start(src, dst, len);
+    int r = App_DmaStartSvc(src, dst, len);            /* SVC -> Handler mode NSC */
     if (r == 0) { (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY); }
     else        { g->dmaPending = 0u; }
     return r;
@@ -207,8 +223,7 @@ static StackType_t xDmaTaskAStack[ STACK_SIZE_WORDS ] __attribute__((aligned(32)
 static StackType_t xDmaTaskBStack[ STACK_SIZE_WORDS ] __attribute__((aligned(32)));
 static StackType_t xPlainTaskStack[ STACK_SIZE_WORDS ] __attribute__((aligned(32)));
 
-/* DMA 태스크는 Secure context 를 만들지 않는다: mediator 는 stackless 이고, 진입 시
- * PSP_S == g_pad_top (landing pad 비어 있음) 이어야 받아 준다. */
+/* DMA 태스크는 Secure context 를 만들지 않는다: mediator 는 SVC (Handler mode) 로 불려 MSP_S 를 쓴다. */
 static void vDmaTaskA( void *pvParameters )
 {
   (void)pvParameters;

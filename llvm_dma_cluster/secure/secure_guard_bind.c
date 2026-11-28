@@ -22,8 +22,6 @@ static int prvIsGuardBlock(const struct dma_manifest_entry *e, uint32_t n, uint3
         uint32_t g = (uint32_t)e[i].end;
         for (uint32_t k = 0; k < e[i].guard_blocks; k++) {
             uint32_t b = g + 256u * k;
-            if (i == 0u && k == 0u)
-                continue;                       /* landing pad 는 데이터용이 아님 */
             if (b == ns)
                 return 1;
         }

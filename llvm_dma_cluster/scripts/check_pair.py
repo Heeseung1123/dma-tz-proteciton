@@ -5,7 +5,6 @@ secure_dma_boot.c 의 dma_boot_config() 와 secure_guard_bind.c 의 guard_bind_i
 할 검사를 ELF 만으로 재현해, 보드에서 나올 반환값(0, -1 … -7)을 미리 알려 준다.
   - manifest: ns.elf 의 .dma_manifest (DMA_MANIFEST_NS_ADDR 에 있어야 함)
   - Secure 데이터가 놓인 guard: secure.elf 의 .gbind<k> 섹션 주소 (pack_guards.py 생성)
-  - landing pad: e[0].end 의 Secure alias + 248 (g_pad_top)
 같은 상수는 secure_dma_boot.c 와 맞춰야 한다 (TAG_RNR0, NS_SRAM_LO/HI, DREGION=8: STM32L5 S-MPU).
 종료 코드: 기대 반환값이 0 이면 0, 아니면 1.  --expect N 으로 다른 값을 기대할 수 있다 (음성 시험).
 """
@@ -60,12 +59,11 @@ def boot(m, bind):
             s2, ge2 = e[j][2], e[j][3] + 256 * e[j][4]
             if s < ge2 and s2 < ge:
                 return -5, f"e[{i}] 와 e[{j}] 겹침"
-    blocks = {e[i][3] + 256 * k for i in range(n) for k in range(e[i][4]) if not (i == 0 and k == 0)}
+    blocks = {e[i][3] + 256 * k for i in range(n) for k in range(e[i][4])}
     for a in bind:
         if a not in blocks:
             return -7, f"Secure 가 guard {a:#x} 에 데이터를 두었는데 NS manifest 에 그 guard 가 없음 (이미지 불일치)"
-    pad = e[0][3] + SEC_ALIAS + 248
-    return 0, f"count {n}, pad_top {pad:#x}, guard 결합 {len(bind)} 블록"
+    return 0, f"count {n}, guard 결합 {len(bind)} 블록"
 
 
 def main() -> int:

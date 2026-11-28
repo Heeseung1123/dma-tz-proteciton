@@ -149,7 +149,7 @@ static evt_record_t s_evt_log[8] __attribute__((annotate("guard")));
 
 **배치기(`pack_guards.py`)가 하는 일: 흩어진 상자에 짐 나눠 담기**
 1. NS 최종 이미지에서 guard 블록 주소를 모두 읽는다. 이 블록들은 메모리 여기저기 떨어져 있다.
-2. 각 블록을 **256 B짜리 상자**로 본다. cluster 0의 guard는 landing pad로 쓰므로 뺀다.
+2. 각 블록을 **256 B짜리 상자**로 본다.
 3. **큰 짐부터, 들어갈 수 있는 첫 상자에** 넣는다(First-Fit Decreasing).
 4. 어느 상자에도 맞지 않는 짐은 **원래 자리(일반 Secure RAM)에 그대로 둔다.**
 5. 결과를 Secure 링커 스크립트 조각으로 만든다. "변수 `s_evt_log`는 주소 0x3001BB00 상자에" 같은 지시가 들어간다.
@@ -220,7 +220,7 @@ guard @0x3001C400 : s_tzic_last(96)                                     96/256 B
 **Q. pass가 잘못 판단하면?**
 - **DMA 쪽**: 해석이 불확실한 경우(지역 배열, 힙, 포인터 변수 경유)는 **오류로 멈추고 위치를 알려 준다.** 개발자가 `annotate`로 직접 지정할 수 있다.
 - **Secure 쪽**: 기본값이 "표시한 것만 옮김"이고, 판단은 보수적이다. 조금이라도 부팅 중에 쓰일 가능성이 있으면 제외한다.
-- 어셈블리 파일(`.S`)에서만 쓰는 변수는 pass가 볼 수 없다. 그런 변수는 설정 파일의 `exclude` 목록에 넣는다(`s_busy`, `g_pad_top` 등).
+- 어셈블리 파일(`.S`)에서만 쓰는 변수는 pass가 볼 수 없다. 그런 변수는 설정 파일의 `exclude` 목록에 넣는다(`s_busy` 등).
 
 **Q. 실행 중에 느려지지 않나?**
 - 모든 판단과 배치는 **빌드할 때** 끝난다.
@@ -253,6 +253,5 @@ guard @0x3001C400 : s_tzic_last(96)                                     96/256 B
 | S-MPU 태그 | Secure MPU region으로 "DMA 허용 영역"을 표시한 것. TTT 명령이 확인한다 |
 | MPCBB | SRAM을 256 B 블록 단위로 Secure/NS 지정하는 하드웨어 (GTZC의 일부) |
 | manifest | NS 이미지 안에 있는 cluster/guard 주소 목록. Secure 부팅이 읽는다 |
-| landing pad | 인터럽트가 Mediator 탈출 순간에 들어올 때 프레임을 받는 guard 블록 1개 |
 | implib | NS가 Secure 함수를 부를 때 쓰는 입구(veneer) 주소표 |
 | bin-packing | 크기가 다른 짐들을 여러 상자에 최대한 채워 넣는 문제 |

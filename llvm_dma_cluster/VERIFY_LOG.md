@@ -70,21 +70,32 @@
 | 24 | `check_layout.py`: `{cluster start, cap}` NS-MPU region 쌍이 이미지 읽기 전용 데이터에 owner 수만큼 있는지 (dma_regions.h 미반영 탐지), cluster 미사용 바이트 보고 | 음성 시험 `stale_regions` |
 | 25 | `gen_layout.py`: cluster 별 bound → cap 표 출력 | 현재 미사용 192 B (공유 64 B cluster 의 256 B 올림), guard 768 B |
 | 26 | `tests/pass/`: opt 단위 시험 13 항목 (void(ptr) 간접 호출 정밀도, Argument 역추적, 포인터 변수, heap/stack error, exclude_callers, annotate) | PASS |
-| 27 | `secure/secure_dma_entry_min.S` (선택안, **기본 아님**): baseline `SECURE_dma_m2m_start_asm` 본문 + pad 검사 6 명령. `MEDIATOR_S=min` | 빌드·veneer 동일·check_pair 0 |
+| 27 | (#28 에서 삭제) `secure/secure_dma_entry_min.S` (선택안, **기본 아님**): baseline `SECURE_dma_m2m_start_asm` 본문 + pad 검사 6 명령. `MEDIATOR_S=min` | 빌드·veneer 동일·check_pair 0 |
 
-## 시험 요약 (마지막 실행: 처음부터 `rm -rf build && build_all.sh && tests/run_tests.sh`)
+## SVC 경로로 전환 (2026-11-28, 사용자 결정: "SVC 경로로 바꿔서 다시 검증, landing pad 삭제")
+프로젝트가 채택한 mediator 는 SVC + asm (`configDMA_MEDIATOR_SVC` 기본 1, `SECURE_dma_m2m_start_svc`)인데, 하네스는
+검증 지시문("landing pad 유지")에 따라 Thread mode NSC + landing pad 를 쓰고 있었다 → 프로젝트 설계로 되돌림.
+
+| # | 단계 | 내용 | 결과 |
+|---|---|---|---|
+| 28 | 3 | 삭제: `secure/secure_dma_entry.S`, `secure_dma_entry_min.S`, `secure_context_patch.md`, `src/` 의 `secure_context.c`/`secure_context_port.c` 사본. `secure_common.sh` 에서 `-DDMA_MEDIATOR_PAD -DSECSTACK_STATIC=1`, `MEDIATOR_S` 제거. 사본 `secure_nsc.c` 는 clang naked 수정(#17)만 남김 (원본과 4 줄 차이) | Secure context 는 원본 그대로 |
+| 29 | 3 | `secure_dma_boot.c`: `g_pad_top`/`g_idle_psp` 와 (3) pad 설정 제거. `secure_guard_bind.c`/`pack_guards.py`/`check_pair.py`: "cluster 0 첫 guard = pad" 제외 규칙 제거 → guard 3 개 모두 Secure 데이터용 | guard 칸 2 → 3 |
+| 30 | 2 | NS 사본 `app_freertos.c`: `App_DmaM2M` 가 원본의 `App_DmaStartSvc` (`svc #110`) 사용. `configDMA_MEDIATOR_SVC != 1` 이면 `#error` | — |
+| 31 | 1/2 | **pass 가 inline asm 을 보지 않아** `App_DmaM2M` 가 인라인되면 sink 가 사라짐 → cluster 0 개, 2차 컴파일 실패. pass 에 `{"svc": N, "args": [레지스터]}` sink 추가 (`svcOf`: asm 문자열 `svc $k`/`svc #N`, 제약 `{rK}`·묶인 입력으로 레지스터→값), `trace()` 가 `ptrtoint` 를 벗김. 단위 시험 2 항목 추가 (`svc #110` 두 형태 배치, `svc #111` 무시) | sites = app_freertos.c:184 (인라인된 svc), cluster 3 개 그대로 |
+| 32 | 5 | T2 stale: pad 제외가 없어지자 Secure 데이터가 cluster 0 guard(0x30018100)로 가고, 기존 shift(Task A cluster 확대)는 그 guard 를 옮기지 않음 → 진짜로 stale 이 아니어서 0 이 맞음. shift 버퍼를 공유 cluster(`dma:shared:vDmaTaskA,vDmaTaskB`)에 넣어 cluster 0 부터 밀리게 함 | check_pair -7, host -1 |
+| 33 | 5 | T5 교체 (min mediator → SVC 경로 검사): Secure 에 pad 심볼 없음, NS 의 DMA 요청 10 곳 모두 `svc #110` 이고 NSC 호출은 `SVC_Handler` 안 한 곳, `__acle_se_SECURE_dma_m2m_start_svc`(44)·`SecureContext_Load/SaveContextAsm`(7/11) 명령열이 GCC baseline Secure ELF 와 동일 | PASS |
+
+남은 차이 1 개: NS `SVC_Handler` → NSC 분기가 GCC 는 veneer `ldr.w pc,[pc]` (1 명령), lld 는 thunk `movw/movt/bx r12` (3 명령).
+요청마다 1 회, ±1–2 cycle [추정] — 보드 측정(BOARD_TEST.md §7)으로 확인.
+
+## 시험 요약 (마지막 실행: 처음부터 `rm -rf build && build_all.sh && tests/run_tests.sh`, SVC 경로)
 - 1단계 플러그인: OK (LLVM 18.1.8). 2단계 NS: OK (1/2차 JSON 동일, check_layout OK). 3단계 Secure: OK (veneer 16 개 동일, check_pair 0).
-- 4단계 보드: **실행 안 함** (아래 결정 D4). 절차·기대값: BOARD_TEST.md.
-- 5단계 + 개선 시험: `tests/run_tests.sh` PASS 14 / FAIL 0.
-- GCC baseline: `./build.sh` 그대로 빌드 (프로젝트 원본 파일 변경 없음. 작업 전부터 있던 `secure_context.c` 공백 수정 1 줄은 건드리지 않음).
+- 4단계 보드: **실행 안 함** (D4). 절차·기대값: BOARD_TEST.md (SVC 경로 주소로 갱신).
+- 5단계 + 개선 시험: `tests/run_tests.sh` PASS 18 / FAIL 0.
+- GCC baseline: `./build.sh` 그대로 (프로젝트 원본 파일 변경 없음. 작업 전부터 있던 `secure_context.c` 공백 수정 1 줄은 건드리지 않음).
 
 ## 결정이 필요한 항목 (사용자)
-- **D1 mediator 오버헤드.** 하네스 `secure_dma_entry.S` 성공 경로 59 명령 vs 현재 baseline `SECURE_dma_m2m_start_asm` 34 명령 (+25).
-  landing pad 고유 비용은 pad 검사 6 명령뿐이고, 나머지(IPSR 검사 3, CCR.EN=0 5, len==0 2, IFCR 2, 레지스터/APSR 정리 등)는
-  baseline 이 근거를 달아 뺀 것들이다(secure_nsc.c 주석, gap-analysis H). 선택안 `MEDIATOR_S=min` = 40 명령. 어느 쪽을 기준으로 할지.
-- **D2 컨텍스트 전환 오버헤드.** landing pad 패치(secure_context_patch.md)로 `LoadContextAsm` 9→13, `SaveContextAsm` 13→21 명령
-  (Secure context 를 가진 태스크 전환 때만). "전환당 사이클 추가 없음" 과 "landing pad 유지" 가 충돌한다. 줄이는 안(제안만, 미적용):
-  g_pad_top/g_idle_psp 를 한 구조체로 묶어 base 1 회 적재, pad base 를 미리 계산해 `sub` 제거, Save 의 `PSPLIM=0` 선행 쓰기 제거 → Save +4 정도.
+- ~~D1 mediator 오버헤드~~, ~~D2 컨텍스트 전환 오버헤드~~ — SVC 경로 전환(#28–#33)으로 해소: mediator·Secure context 명령열이 baseline 과 동일.
 - **D3 NS-MPU region.** 공유 cluster 때문에 DMA 태스크가 configurable region 3/3 을 쓴다 (baseline 2/3). CLAUDE.md 의 "NS-MPU 영역 추가 사용 금지" 와 충돌.
   공유 버퍼를 빼면 2/3 으로 돌아간다.
 - **D4 보드.** STLINK-V3 가 연결되어 있지만 CLAUDE.md 는 보드 실행을 사용자 몫으로 정하고 있고, 이 이미지들은 한 번도 실행된 적이 없어 올리지 않았다.

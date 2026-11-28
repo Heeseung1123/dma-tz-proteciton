@@ -31,18 +31,12 @@ S_SRCS_REL=(
 )
 # llvm_dma_cluster 가 추가하는 Secure 파일 (TOOLS 기준)
 S_ADD_C=( secure/secure_dma_boot.c secure/secure_guard_bind.c )
-# MEDIATOR_S=full (기본, secure_dma_entry.S) | min (secure_dma_entry_min.S: baseline _asm 본문 + pad 검사)
-case "${MEDIATOR_S:-full}" in
-  full) S_ADD_ASM=( secure/secure_dma_entry.S ) ;;
-  min)  S_ADD_ASM=( secure/secure_dma_entry_min.S ) ;;
-  *) echo "MEDIATOR_S=full|min" >&2; exit 1 ;;
-esac
 S_STARTUP_REL=$_P/STM32CubeIDE/Secure/Application/Startup/startup_stm32l562qeixq.s
 S_LDS=$(ov "$_P/STM32CubeIDE/Secure/STM32L562QEIXQ_FLASH.ld")
 
-# DMA_MEDIATOR_PAD: secure_nsc.c 의 C SECURE_dma_m2m_start 를 빼고 secure_dma_entry.S 로 (s_busy extern)
-# SECSTACK_STATIC=1: secure_context*.c landing pad 패치 (secure_context_patch.md)
-S_DEFS="-DUSE_HAL_DRIVER -DSTM32L562xx -DDEBUG -DDMA_MEDIATOR_PAD -DSECSTACK_STATIC=1 ${S_EXTRA_DEFS:-}"
+# mediator 는 프로젝트 그대로: NS SVC_Handler fast path (SVC #110) → SECURE_dma_m2m_start_svc (secure_nsc.c,
+# MEDIATOR_ASM). Secure context/스택 패치 없음 (secure_context*.c 원본).
+S_DEFS="-DUSE_HAL_DRIVER -DSTM32L562xx -DDEBUG ${S_EXTRA_DEFS:-}"
 S_INCS="-I$ROOT/Drivers/BSP/STM32L562E-DK -I$ROOT/$_P/Secure/Inc -I$ROOT/$_P/Secure_nsclib \
  -I$ROOT/Drivers/STM32L5xx_HAL_Driver/Inc -I$ROOT/Drivers/CMSIS/Device/ST/STM32L5xx/Include \
  -I$ROOT/Drivers/STM32L5xx_HAL_Driver/Inc/Legacy -I$ROOT/$_FS \

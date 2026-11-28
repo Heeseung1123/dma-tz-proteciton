@@ -1,5 +1,5 @@
 {
   "out": "unused.json",
-  "sinks": [ { "func": "SINK", "args": [1] } ],
+  "sinks": [ { "func": "SINK", "args": [1] }, { "svc": 110, "args": [1] } ],
   "exclude_callers": ["attack"]
 }

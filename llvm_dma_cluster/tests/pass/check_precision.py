@@ -7,7 +7,7 @@ fails = []
 def chk(cond, msg):
     print(("ok   " if cond else "FAIL ") + msg)
     if not cond: fails.append(msg)
-chk(sorted(L["tasks"]) == ["taskA", "taskB", "taskH", "taskS", "timerTask"], f"tasks {sorted(L['tasks'])}")
+chk(sorted(L["tasks"]) == ["taskA", "taskB", "taskH", "taskS", "taskV", "timerTask"], f"tasks {sorted(L['tasks'])}")
 chk("t.timerTask" not in cl and all("timerTask" not in c["owners"] for c in L["clusters"]),
     "timerTask 의 void(ptr) 간접 호출이 태스크 함수로 연결되지 않음")
 chk(bufs("t.taskA") == ["bufA", "bufP1", "bufP2"], f"t.taskA = {bufs('t.taskA')} (Argument 역추적 + 포인터 변수 후보 둘)")
@@ -21,5 +21,7 @@ chk(("heap-buffer", "error", "taskH") in kinds, "pvPortMalloc: heap-buffer error
 chk(("stack-buffer", "error", "taskS") in kinds, "지역 배열: stack-buffer error")
 chk(bufs("t.taskS") == ["bufTest"], "taskS 의 정상 버퍼는 그대로 배치")
 chk(("unresolved-load", "warning", "taskB") in kinds, "taskB c->dst: unresolved-load 가 annotate 덕분에 warning")
+chk(bufs("t.taskV") == ["bufV", "bufV2"], f"t.taskV = {bufs('t.taskV')} (inline asm svc #110, r1)")
+chk(all(b["name"] != "bufNo" for c in L["clusters"] for b in c["buffers"]), "svc #111 은 sink 아님")
 chk(L["errors"] == 2, f"errors = {L['errors']} (heap, stack)")
 sys.exit(1 if fails else 0)

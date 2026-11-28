@@ -26,15 +26,18 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/GlobalVariable.h"
+#include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Operator.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
@@ -60,7 +63,8 @@ namespace {
 //===----------------------------------------------------------------------===//
 struct SinkSpec {
   std::string Func;              // 예: "SECURE_dma_m2m_start"
-  SmallVector<unsigned, 2> Args; // 버퍼 인자 위치 (0부터)
+  SmallVector<unsigned, 2> Args; // 버퍼 인자 위치 (0부터). Svc 면 레지스터 번호 (1 = r1)
+  int64_t Svc = -1;              // >= 0: 함수 호출이 아니라 inline asm "svc #Svc" 가 sink
 };
 
 struct Config {
@@ -126,11 +130,13 @@ static Config loadConfig() {
         SinkSpec K;
         if (auto F = S->getString("func"))
           K.Func = F->str();
+        if (auto N = S->getInteger("svc"))
+          K.Svc = *N;
         if (const json::Array *Ar = S->getArray("args"))
           for (const json::Value &X : *Ar)
             if (auto I = X.getAsInteger())
               K.Args.push_back(static_cast<unsigned>(*I));
-        if (!K.Func.empty() && !K.Args.empty())
+        if ((!K.Func.empty() || K.Svc >= 0) && !K.Args.empty())
           C.Sinks.push_back(std::move(K));
       }
   if (const char *O = std::getenv("DMA_CLUSTER_OUT")) // 빌드별 출력 경로 (시험 변형이 본 빌드를 덮지 않게)
@@ -267,6 +273,67 @@ static FnSet reach(Function *Entry,
 }
 
 //===----------------------------------------------------------------------===//
+// 2-1) inline asm SVC sink: "svc #N" / "svc $k" (k = 상수 N 인 "i" 피연산자)
+//===----------------------------------------------------------------------===//
+// 반환: 이 호출이 svc 이면 그 번호, 아니면 -1. Regs[r] = r<r> 에 들어가는 값 (입력 또는 "+r" 묶음).
+static int64_t svcOf(const CallBase &CB, SmallVectorImpl<const Value *> &Regs) {
+  const auto *IA = dyn_cast<InlineAsm>(CB.getCalledOperand());
+  if (!IA)
+    return -1;
+  StringRef Str = StringRef(IA->getAsmString()).trim();
+  if (!Str.consume_front("svc"))
+    return -1;
+  Str = Str.trim();
+  Regs.assign(16, nullptr);
+  SmallVector<std::string, 4> OutReg; // 출력 피연산자 번호 → 레지스터 코드
+  SmallVector<const Value *, 8> OpVal; // asm 피연산자 번호($k) → 값 (출력은 nullptr)
+  unsigned ArgNo = 0;
+  auto regNo = [](StringRef C) -> int {
+    unsigned R;
+    if (C.consume_front("{r") && C.consume_back("}") && !C.getAsInteger(10, R) && R < 16)
+      return static_cast<int>(R);
+    return -1;
+  };
+  for (const InlineAsm::ConstraintInfo &CI : IA->ParseConstraints()) {
+    if (CI.Type == InlineAsm::isClobber)
+      continue;
+    std::string Code = CI.Codes.empty() ? "" : CI.Codes[0];
+    if (CI.Type == InlineAsm::isOutput) {
+      OutReg.push_back(Code);
+      OpVal.push_back(nullptr);
+      if (CI.isIndirect)
+        ++ArgNo;
+      continue;
+    }
+    if (CI.Type != InlineAsm::isInput || ArgNo >= CB.arg_size())
+      continue;
+    const Value *V = CB.getArgOperand(ArgNo++);
+    OpVal.push_back(V);
+    int R = regNo(Code);
+    if (CI.hasMatchingInput() || (R < 0 && !Code.empty() && isDigit(Code[0]))) {
+      unsigned T; // 묶인 입력 ("0" 또는 "{r0}" 이 출력과 같은 레지스터)
+      if (!StringRef(Code).getAsInteger(10, T) && T < OutReg.size())
+        R = regNo(OutReg[T]);
+    }
+    if (R >= 0)
+      Regs[R] = V;
+  }
+  int64_t N = -1;
+  if (Str.consume_front("$")) {
+    Str.consume_front("{");
+    unsigned K;
+    if (!Str.consumeInteger(10, K) && K < OpVal.size() && OpVal[K])
+      if (auto *CI = dyn_cast<ConstantInt>(OpVal[K]))
+        N = CI->getSExtValue();
+  } else {
+    Str.consume_front("#");
+    if (Str.consumeInteger(0, N))
+      N = -1;
+  }
+  return N;
+}
+
+//===----------------------------------------------------------------------===//
 // 3) 버퍼 인자 역추적
 //===----------------------------------------------------------------------===//
 static bool isHeapCall(const Value *V, const Config &C) {
@@ -304,6 +371,8 @@ static void trace(State &S, const Value *V, StringRef Task, const FnSet &R,
                   SmallPtrSetImpl<const Value *> &Visited) {
   if (Depth > 16 || !Visited.insert(V).second)
     return;
+  if (auto *PI = dyn_cast<PtrToIntOperator>(V)) // svc 레지스터 인자: (uint32_t)ptr
+    return trace(S, PI->getPointerOperand(), Task, R, Site, Depth + 1, Visited);
   const Value *O = getUnderlyingObject(V, /*MaxLookup=*/0); // GEP/cast 제거
 
   if (auto *G = dyn_cast<GlobalVariable>(O)) {
@@ -510,6 +579,18 @@ struct DmaClusterPass : PassInfoMixin<DmaClusterPass> {
           auto *CB = dyn_cast<CallBase>(&I);
           if (!CB)
             continue;
+          if (CB->isInlineAsm()) {
+            SmallVector<const Value *, 16> Regs;
+            int64_t N = svcOf(*CB, Regs);
+            for (const SinkSpec &K : Cfg.Sinks)
+              if (N >= 0 && K.Svc == N)
+                for (unsigned Ri : K.Args)
+                  if (Ri < Regs.size() && Regs[Ri]) {
+                    SmallPtrSet<const Value *, 16> Visited;
+                    trace(S, Regs[Ri], TName, R, *CB, 0, Visited);
+                  }
+            continue;
+          }
           Function *C = calleeOf(*CB);
           if (!C)
             continue;

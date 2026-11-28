@@ -1,8 +1,10 @@
 # 보드 확인 절차 (4단계) — 아직 보드에서 실행하지 않았음
 
-대상 이미지: `build/secure/secure.elf` + `build/ns/ns.elf` (`scripts/build_all.sh` 산출물, MEDIATOR_S=full).
+대상 이미지: `build/secure/secure.elf` + `build/ns/ns.elf` (`scripts/build_all.sh` 산출물).
+Mediator 는 프로젝트와 같은 SVC 경로다: 태스크 `svc #110` → NS `SVC_Handler` fast path (`dma_m2m_start_svc`
+레이블) → Handler mode 에서 `SECURE_dma_m2m_start_svc` (secure_nsc.c, asm). landing pad / Secure 스택 패치 없음.
 아래 주소·기대값은 그 빌드에서 읽은 값이다. 다시 빌드하면 `llvm-nm` 으로 바뀐 것이 없는지 먼저 확인한다
-(현재 값: c0 0x20018000 / c1 0x20018200 / c2 0x20018400, guard 각 +0x100, pad_top 0x300181f8).
+(현재 값: c0 0x20018000 / c1 0x20018200 / c2 0x20018400, guard 각 +0x100).
 보드에 올리기 전: `python3 scripts/check_pair.py build/secure/secure.elf build/ns/ns.elf` → `예상 = 0`.
 
 ## 0. 올리기
@@ -24,8 +26,6 @@ b dma_boot_config
 c
 finish                         # Value returned = 0
 p g_dma_boot_status            # 0   (1 이면 아직 실행 전, <0 이면 Error_Handler 에서 정지)
-p/x g_pad_top                  # 0x300181f8
-p/x g_idle_psp                 # 0x300181f8
 # S-MPU 태그 (Secure 상태에서)
 set $i = 4
 while $i < 7
@@ -46,7 +46,7 @@ x/8bx &s_dmaDstB               # 80 81 82 83 84 85 86 87
 x/8bx &s_dmaShared             # 00..07 (A),   x/8bx ((char*)&s_dmaShared)+32 → 80..87 (B)
 p/x s_privA.v.dmaStatus        # 0 (TC)
 ```
-LED10 은 Plain_Task 가 200 ms 마다 토글 (Secure context 를 가진 태스크의 Load/Save 패치 경로가 살아 있음).
+LED10 은 Plain_Task 가 200 ms 마다 토글 (Secure context 를 가진 태스크의 stock Load/Save 경로).
 
 ## 3. 요청 시점 공격 (논문 §4 (a)) — Task A 시작 시 1 회 자동 실행
 ```gdb
@@ -57,7 +57,7 @@ p s_privA.attack               # {0, -1, -1, -1, -1, -1}
 
 ## 4. 전송 시점 guard (논문 §4 (b)) — 검증 통과 뒤 길이 변조
 ```gdb
-b *0x0c0002d0                  # CCR.EN = 1 직전 (__acle_se_SECURE_dma_m2m_start), 정상 요청이 검증을 통과한 상태
+b *0x0c000f20                  # CCR.EN = 1 (str.w r12,[r3]) 직전, __acle_se_SECURE_dma_m2m_start_svc
 c
 p/x $r1                        # dst. 0x20018200 (Task A) 인 정지점까지 c 반복
 set *(unsigned*)0x5002000C = 0x210     # CNDTR1: 8 → 528 B (cluster 256 + guard 256 + 16 B 너머)
@@ -72,22 +72,20 @@ p s_privA.okCount              # 계속 증가 (채널이 중단·복구되고 �
 읽기 방향: 같은 정지점에서 `set *(unsigned*)0x50020010 = 0x20018300` (CPAR1 = guard) → TEIF →
 `p/x s_privA.v.dmaStatus` = 1.
 
-## 5. 탈출 창의 보류 인터럽트 → landing pad (T1)
+## 5. SVC 경로 확인 (Secure context 없는 DMA 태스크)
 ```gdb
-b *0x0c0002f6                  # out: 의 cpsie i (원자 구간 끝)
+b *0x0c000ec6                  # __acle_se_SECURE_dma_m2m_start_svc 첫 명령 (mrs r3, ipsr)
 c
-set *(unsigned*)0xE002ED04 = (1<<26)   # ICSR_NS.PENDSTSET: NS SysTick 을 보류
-p/x $psp_s                     # (ST gdbserver 이름이 다르면 info registers) = 0x300181f8
-stepi                          # cpsie 직후 예외 진입
-p/x $psp_s                     # < 0x300181f8 이고 >= 0x30018100 (프레임이 pad 안)
+p/x $xpsr & 0x1ff              # 0xb (SVCall): Handler mode 로 들어옴
+p/x $msp_s                     # Secure 부팅 스택 안 (ST gdbserver 이름이 다르면 info registers)
+bt                             # NS 쪽: dma_m2m_start_svc ← SVC_Handler (태스크의 svc #110)
 delete
 c   (몇 초) → Ctrl-C
-p s_privA.okCount              # 계속 증가, HardFault/SecureFault 없음
 p/x *(unsigned*)0xE000EDE4     # SFSR = 0
 p/x *(unsigned*)0xE000ED28     # CFSR = 0
 ```
-T2 (pad 점유 중 다른 DMA 태스크 → −1) 는 정상 태스크가 mutex 로 직렬화되어 재현이 어렵다. 필요하면
-위 stepi 직후 `set $pc` 로 Task B 의 호출을 강제해야 하므로 생략 가능.
+Thread mode 에서 NSC 를 직접 부르는 경로는 이 이미지에 없다 (tests/run_tests.sh T5: NS 의 mediator 호출은
+`SVC_Handler` 안 한 곳뿐).
 
 ## 6. 음성: stale NS → −7 (정지)
 ```bash
@@ -102,15 +100,15 @@ DMA 태스크가 비특권이라 DWT 를 코드에서 읽을 수 없으므로 GD
 ```gdb
 set *(unsigned*)0xE000EDFC |= (1<<24)  # DEMCR.TRCENA
 set *(unsigned*)0xE0001000 |= 1        # DWT_CTRL.CYCCNTENA
-# NSC 1 회: vDmaTaskA 안 SECURE_dma_m2m_start 호출(bl) 과 다음 명령에 정지점 (disassemble vDmaTaskA 로 주소 확인)
+# 요청 1 회: vDmaTaskA 안 svc #110 과 다음 명령에 정지점 (disassemble vDmaTaskA 로 주소 확인)
 # 컨텍스트 전환: PendSV_Handler(0x0804059c) 진입과 마지막 bx lr
 ```
-정적 명령 수 (실측 전 참고, `objdump`):
+정적 명령열 (`tests/run_tests.sh` T5 가 GCC baseline Secure ELF 와 비교):
 
-| 경로 | baseline | 이 빌드 (full) | 이 빌드 (min) |
-|---|---|---|---|
-| mediator 성공 경로 | 34 (`SECURE_dma_m2m_start_asm`) | 59 | 40 |
-| `SecureContext_LoadContextAsm` | 9 | 13 | 13 |
-| `SecureContext_SaveContextAsm` | 13 | 21 | 21 |
+| 경로 | baseline (GCC) | 이 빌드 |
+|---|---|---|
+| `__acle_se_SECURE_dma_m2m_start_svc` | 44 (성공 경로 35) | 동일 명령열 |
+| `SecureContext_LoadContextAsm` / `SaveContextAsm` | 7 / 11 | 동일 명령열 |
+| NS `SVC_Handler` → NSC 분기 | GCC veneer `ldr.w pc,[pc]` 1 명령 | lld thunk `movw/movt/bx r12` 3 명령 |
 
-Load/Save 증가분은 Secure context 를 가진 태스크(Plain_Task)가 전환될 때만 든다.
+마지막 행만 다르다 (NS 링커 차이, 요청마다 1 회). 차이는 위 "요청 1 회" 측정으로 확인한다 [추정: ±1–2 cycle].

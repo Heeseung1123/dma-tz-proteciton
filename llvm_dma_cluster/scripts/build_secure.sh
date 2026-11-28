@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # build_secure.sh — ④ Secure 최종 빌드 (GCC, CubeIDE 와 같은 플래그) + ⑤ veneer 비교
-#   - 소스: secure_common.sh (src/ 사본 우선) + secure_dma_boot.c / secure_guard_bind.c / secure_dma_entry.S
+#   - 소스: secure_common.sh (src/ 사본 우선) + secure_dma_boot.c / secure_guard_bind.c
 #   - 링커 스크립트: src/ 사본 (INCLUDE secure_guard_mem.ld / secure_guard_sec.ld, -L build/secure/gen)
 #   - --in-implib=⓪ 로 기존 veneer 주소를 유지, --out-implib 는 build/secure/secure_nsclib.o
 set -euo pipefail
@@ -23,9 +23,6 @@ for r in "${S_SRCS_REL[@]}"; do
 done
 for r in "${S_ADD_C[@]}"; do
   o="$S_OUT/obj/$(basename "$r" .c).o"; "$GCC" $CFLAGS -c "$TOOLS/$r" -o "$o"; OBJS+=("$o")
-done
-for r in "${S_ADD_ASM[@]}"; do
-  o="$S_OUT/obj/$(basename "$r" .S).o"; "$GCC" $S_ARCH -g3 -c -x assembler-with-cpp "$TOOLS/$r" -o "$o"; OBJS+=("$o")
 done
 o="$S_OUT/obj/startup.o"
 "$GCC" $S_ARCH -g3 -DDEBUG -c -x assembler-with-cpp "$(ov "$S_STARTUP_REL")" -o "$o"; OBJS+=("$o")

@@ -26,7 +26,7 @@ bash tests/run_tests.sh                         # 단위·음성·양성 시험 
 |---|---|
 | `pass/SecureGuardSelect.cpp` | Secure IR 을 분석한다. 0 초기화, ≤256 B, 부팅 경로 미사용, GCC 섹션 이름 대응 조건을 확인해 guard 로 옮겨도 되는 전역을 고른다 |
 | `config/secure_guard_config.json` | 모드(`annotated`/`auto`), boot 함수, 부팅 후에만 켜지는 핸들러, 어셈블리 전용 전역 제외 목록 |
-| `gen/pack_guards.py` | 흩어진 guard 블록(256 B 칸, landing pad 제외)에 First-Fit Decreasing 으로 나눠 담는다. GCC 용 `secure_guard_mem.ld`, `secure_guard_sec.ld`, `guard_bind.h` 를 생성한다 |
+| `gen/pack_guards.py` | 흩어진 guard 블록(256 B 칸)에 First-Fit Decreasing 으로 나눠 담는다. GCC 용 `secure_guard_mem.ld`, `secure_guard_sec.ld`, `guard_bind.h` 를 생성한다 |
 | `secure/secure_guard_bind.c` | 부팅 시 기대 guard 주소와 manifest 를 비교한다(불일치면 정지). 일치하면 guard 의 Secure 데이터를 0 으로 초기화한다 |
 | `scripts/build_secure_guard.sh` | ② 분석(clang → llvm-link → opt), ③ 배치. ④ GCC 최종 빌드는 생성된 스크립트를 INCLUDE 하고 `-Wl,--in-implib` 로 veneer 를 고정한다 |
 
@@ -66,7 +66,7 @@ bash tests/run_tests.sh                         # 단위·음성·양성 시험 
 
 | 항목 | 학습 자료 (Introduction / Tutorial) | 이 구현 | 이유 |
 |---|---|---|---|
-| guard 블록 수 N | 4단계: Secure 스택 WCSD 로 N 계산 | **항상 1** (`--guard-blocks 1`) | Mediator 를 assembly + atomic(스택 미사용)으로 바꿈 → guard 를 Secure 스택으로 쓰지 않음. **4단계(stack-size, wcsd.py) 불필요** |
+| guard 블록 수 N | 4단계: Secure 스택 WCSD 로 N 계산 | **항상 1** (`--guard-blocks 1`) | Mediator 가 SVC 경로(Handler mode, asm, Secure 스택 미사용) → guard 를 Secure 스택으로 쓰지 않음. **4단계(stack-size, wcsd.py) 불필요** |
 | 다중 owner 버퍼 | 오류 (또는 shared 정책) | **shared cluster** (`.dma.s.<k>`) 로 자동 분리 | 공유 DMA 버퍼가 실제로 존재. TTT 는 "DMA 영역 소속", TTAT 는 "그 태스크 권한" → 공유 cluster 를 owner 태스크들의 NS-MPU 에만 넣으면 됨 |
 | section 이름 | `.dma.<task>` | `.dma.t.<task>` / `.dma.s.<k>` | 태스크 전용·공유를 패턴으로 구분 |
 | cluster 크기 | 1차 ELF 에서 측정 | pass 가 **상한(크기+정렬 패딩)** 계산 → 256 B 올림 고정 용량 | 용량이 상수가 되어 NS-MPU region 길이를 컴파일 시점 상수로 쓸 수 있음 |
@@ -227,35 +227,13 @@ if (dma_boot_config() != 0) {
 
 3. `HAL_GTZC_MPCBB_ConfigMemAttributes` 의 size 인자 규약은 **기존 동작하던 코드와 동일하게** (`GUARD_HAL_SIZE_ARG`). HAL 버전 문서로 단위를 확인.
 4. (선택) 설정 후 잠금: `SYSCFG->CSLCKR |= SYSCFG_CSLCKR_LOCKSMPU;`, MPCBB `LCK`/`LCKVTR`. LOCKSMPU 가 `MPU_RLAR`·alias 까지 고정하는지는 RM0438 에 명시가 없어 **실측 확인**.
-5. Mediator 는 [secure/secure_dma_entry.S](secure/secure_dma_entry.S)(assembly + atomic, 자체 스택 0)로 교체한다. TTT 가 보는 S-MPU 태그는 manifest 로 자동 설정된다.
-6. stock Secure context 를 [secure/secure_context_patch.md](secure/secure_context_patch.md)대로 수정한다(Init, Load, Save, PSPLIM 전제).
-
-### 5.1 landing pad: guard 블록 1개의 재활용
-
-**왜 필요한가.** `cpsid` 는 예외를 버리지 않고 **미룬다**.
-- 원자 구간 동안 도착한 인터럽트는 모두 `cpsie` 직후, `bxns` 전에 Secure Thread 위에서 받아진다.
-- 이때 PSP_S = 0 이면 매번 stacking fault 가 난다.
-- 짧은 전송이라면 자기 DMA TC 인터럽트만으로도 크래시가 난다.
-
-**해법.** 쉬는 동안 PSP_S 를 **cluster 0 의 guard 블록 top**(`g_pad_top`, Secure alias + 248)에 둔다.
-
-| 성질 | 내용 |
-|---|---|
-| 메모리 | 0 B. 이미 있는 guard 를 쓴다. guard 는 Secure 라서 NS 가 쓰면 여전히 막히므로 DMA overflow 트랩 역할도 유지된다. |
-| S-MPU 태깅과의 관계 | pad 주소는 링크 결과로 정해지는 **상수 하나**다. 호출자별로 guard 를 찾는 조회가 없으므로 ★1 과 충돌하지 않는다. |
-| 창에서 받은 예외 | 프레임은 pad 에 쌓인다. 그 태스크가 전환돼도 PSP_S 가 프레임을 가리킨 채 유지된다(stock Load/Save 가 이 값을 보존). 그래서 재개가 정상이다. |
-| 다른 태스크 | mediator 진입 시 `PSP_S ≠ g_pad_top` 이면 −1 을 받는다. 정상 태스크는 `dmaMutex` 때문에 이 경우를 만나지 않는다. |
-| 비용 | mediator 의 원자 구간 안에 pad 점유 검사 명령 5개, stock Load +3 / Save +7 명령 |
-
-**검증 절차**
-- **T1** — GDB 로 원자 구간 안에서 SysTick 을 pending 시킨다(`set *(unsigned*)0xE000ED04 = 1<<26`). `cpsie` 직후 프레임이 `g_pad_top` 아래에 쌓이는지, PendSV 로 전환된 뒤 재개되어 전송이 완료되는지 확인한다.
-- **T2** — 정지 상태에서 다른 DMA 태스크가 호출하면 −1 이 나오는지 확인한다.
-- **T3** — Plain 태스크로 전환됐다가 돌아와도 PSP_S 가 보존되는지 확인한다(`g_idle_psp`).
-
-**남는 위험** — 두 태스크가 동시에 pad 에 정지하는 경우다. 자세한 내용은 secure_context_patch.md §4 에 있다.
-- FP 프레임: PSPLIM 이 막아 fail-closed 로 끝난다.
-- 정수 프레임: 재개 순서가 뒤바뀌면 cross-task 혼동이 생길 수 있다. mutex 를 우회한 호출에서만 생긴다.
-- Secure context 가 없는 다른 태스크가 스택을 쓰는 NSC 를 호출하지 않는다는 규칙이 전제다.
+5. Mediator 는 프로젝트의 **SVC 경로를 그대로** 쓴다 (2026-11-28 전환, VERIFY_LOG #28–#31).
+   - NS 태스크: `svc #110` (`App_DmaStartSvc`, r0=src r1=dst r2=len) → NS `SVC_Handler` fast path (portasm.c) →
+     Handler mode 에서 `SECURE_dma_m2m_start_svc` (secure_nsc.c, asm, 원자성 = SVC 예외 안).
+   - Secure 실행 중 예외 프레임은 MSP_S 에 쌓이므로 DMA 태스크에 Secure context/스택이 필요 없다.
+     landing pad, `secure_dma_entry.S`, stock Secure context 패치는 **삭제**했다 (secure_context*.c 원본 사용).
+   - TTT 가 보는 S-MPU 태그는 manifest 로 자동 설정된다. DmaCluster pass 는 inline asm `svc #110` 도 sink 로 본다
+     (`config/dma_config.json` 의 `{"svc": 110, "args": [1]}`, args = 레지스터 번호).
 
 ## 6. 빌드와 적용 순서
 

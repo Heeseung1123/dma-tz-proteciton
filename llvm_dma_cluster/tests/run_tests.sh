@@ -5,6 +5,7 @@ set -uo pipefail
 TOOLS=$(cd "$(dirname "$0")/.." && pwd)
 source "$TOOLS/scripts/env_llvm18.sh"; export LLVM LLVM_DIR
 B=$TOOLS/build
+ROOT=$(cd "$TOOLS/.." && pwd)
 export IMPLIB=$B/secure0/secure_nsclib.o
 PASS=0; FAILN=0
 ok()   { echo "PASS  $1"; PASS=$((PASS+1)); }
@@ -83,12 +84,22 @@ assert any(d["kind"] == "annotate-override" for d in L["diagnostics"])
 EOF
 else bad "override: 빌드 실패"; fi
 
-echo "== T5 mediator 선택안 MEDIATOR_S=min (baseline _asm 본문 + pad 검사)"
-rm -rf "$B/t_min"; mkdir -p "$B/t_min"; cp -r "$B/secure" "$B/t_min/"
-if S_OUT=$B/t_min/secure MEDIATOR_S=min bash "$TOOLS/scripts/build_secure.sh" > "$B/t_min.log" 2>&1 \
-   && python3 "$TOOLS/scripts/check_pair.py" "$B/t_min/secure/secure.elf" "$B/ns/ns.elf" >> "$B/t_min.log"; then
-  ok "min: Secure 빌드 + veneer 동일 + check_pair 0"
-else bad "min (build/t_min.log)"; fi
+echo "== T5 SVC mediator 경로 (landing pad 없음): 생성 이미지 검사"
+OD="$LLVM/llvm-objdump -d --no-show-raw-insn"; S=$B/secure/secure.elf; N=$B/ns/ns.elf
+insns() { $OD --disassemble-symbols="$1" "$2" 2>/dev/null | grep -E '^\s+[0-9a-f]+:' | cut -f2- | sed 's/0x[0-9a-f]*//g'; }
+if "$LLVM/llvm-nm" "$S" | grep -qE ' (g_pad_top|g_idle_psp)$'; then bad "svc: Secure 에 landing pad 심볼이 남음"
+else ok "svc: Secure 에 g_pad_top/g_idle_psp 없음"; fi
+CALLERS=$($OD "$N" | awk '/^[0-9a-f]+ <.*>:$/{f=$2} /bl\s.*SECURE_dma_m2m_start/{print f}' | sort -u | tr '\n' ' ')
+NSVC=$($OD "$N" | grep -cE 'svc\s+#0x6e')
+if [ -n "$CALLERS" ] && [ -z "$(echo "$CALLERS" | tr ' ' '\n' | grep -vxE '<(SVC_Handler|dma_m2m_start_svc)>:|')" ] && [ "$NSVC" -gt 0 ]; then ok "svc: NS 의 DMA 요청 $NSVC 곳 모두 svc #110, mediator NSC 호출은 SVC_Handler(dma_m2m_start_svc 레이블) 에서만"
+else bad "svc: NSC 호출자 [$CALLERS], svc #110 $NSVC 곳"; fi
+SB=$(ls "$ROOT"/Projects/STM32L562E-DK/Applications/FreeRTOS/FreeRTOS_SecureIOToggle_TrustZone/STM32CubeIDE/Secure/Debug/FreeRTOS_SecureIOToggle_TrustZone_Secure.elf 2>/dev/null || true)
+if [ -n "$SB" ]; then
+  for f in __acle_se_SECURE_dma_m2m_start_svc SecureContext_LoadContextAsm SecureContext_SaveContextAsm; do
+    if [ -n "$(insns $f "$S")" ] && diff <(insns $f "$SB") <(insns $f "$S") > /dev/null; then ok "svc: $f = GCC baseline 과 같은 명령열 ($(insns $f "$S" | wc -l) 개)"
+    else bad "svc: $f 가 GCC baseline 과 다름"; fi
+  done
+else echo "SKIP  GCC baseline Secure ELF 없음 (./build.sh 후 다시)"; fi
 
 echo "== 결과: PASS $PASS / FAIL $FAILN"
 [ "$FAILN" -eq 0 ]

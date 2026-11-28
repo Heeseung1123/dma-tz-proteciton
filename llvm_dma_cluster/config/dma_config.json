@@ -2,6 +2,13 @@
   "out": "build/ns/dma_layout.json",
   "sinks": [
     {
+      "svc": 110,
+      "args": [
+        1
+      ],
+      "note": "portSVC_DMA_M2M_START: svc #110, r0=src r1=dst r2=len (app_freertos.c App_DmaStartSvc)"
+    },
+    {
       "func": "SECURE_dma_m2m_start",
       "args": [
         1

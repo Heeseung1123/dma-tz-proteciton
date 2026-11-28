@@ -17,12 +17,6 @@
  * HAL 버전의 size 단위(바이트/블록)를 문서로 확인하고 기존 동작과 동일하게 유지할 것. */
 #define GUARD_HAL_SIZE_ARG(nblk)  (nblk)
 
-/* landing pad: 쉬는 동안 PSP_S 가 가리키는 곳 = cluster 0 의 guard 블록 top (Secure alias).
- * 링크 결과로 정해지는 상수이며 런타임에 호출자별로 조회하지 않는다.
- * secure_dma_entry.S 의 점유 검사와 SecureContext_Init/Save/Load 가 사용한다. */
-uint32_t g_pad_top;
-uint32_t g_idle_psp;              /* stock Load 가 보존, Save 가 복원하는 쉼 PSP_S */
-
 static uint32_t prvMaxTags(void)
 {
     uint32_t dregion = (MPU->TYPE & MPU_TYPE_DREGION_Msk) >> MPU_TYPE_DREGION_Pos;  /* 8 */
@@ -83,13 +77,7 @@ int dma_boot_config(void)
         }
     }
 
-    /* (3) landing pad = e[0] 의 첫 guard 블록 (frame 최대 212 B < 248 B).
-     *     guard 는 Secure 이므로 NS CPU/NS DMA 가 pad 위 프레임을 읽거나 바꿀 수 없다.
-     *     SecureContext_Init() 보다 먼저 실행되어야 한다 (NS 진입 전이므로 성립). */
-    g_pad_top  = (uint32_t)e[0].end + 0x10000000u + 248u;
-    g_idle_psp = g_pad_top;
-
-    /* (3-1) guard 에 배치된 Secure 데이터: 주소 일치 확인 + 0 초기화 (secure_guard_bind.c) */
+    /* (3) guard 에 배치된 Secure 데이터: 주소 일치 확인 + 0 초기화 (secure_guard_bind.c) */
     {
         extern int guard_bind_init(const struct dma_manifest_entry *e, uint32_t n);
         if (guard_bind_init(e, n) != 0)

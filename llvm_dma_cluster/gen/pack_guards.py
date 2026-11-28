@@ -12,7 +12,7 @@
 
 규칙
   - 각 guard 블록 = 256 B 칸 하나. 블록끼리 떨어져 있으므로 객체 하나는 한 칸 안에만.
-  - cluster 0 의 첫 guard 블록은 landing pad 이므로 쓰지 않는다.
+  - 모든 guard 블록을 쓸 수 있다 (mediator 는 SVC 경로라 Secure 스택용 guard 가 없다).
   - 큰 객체부터, 들어갈 수 있는 첫 칸에 (First-Fit Decreasing, 정렬 패딩 포함).
   - 어느 칸에도 안 맞는 객체는 옮기지 않는다 (기존 Secure RAM 에 그대로).
 """
@@ -38,9 +38,7 @@ def guard_blocks(ns_elf: str) -> list[int]:
     blocks, i = [], 0
     while f"__dmac{i}_end" in syms:
         g, ge = syms[f"__dmac{i}_end"], syms[f"__dmac{i}_guard_end"]
-        for a in range(g, ge, BLOCK):
-            if not (i == 0 and a == g):          # cluster 0 의 첫 블록 = landing pad
-                blocks.append(a)
+        blocks.extend(range(g, ge, BLOCK))
         i += 1
     return blocks
 
@@ -115,7 +113,7 @@ def main() -> int:
     hdr += ["#endif", ""]
     (out / "guard_bind.h").write_text("\n".join(hdr))
 
-    rep = [f"guard 블록 {len(blocks)} 개 (landing pad 제외), 사용 {len(used_bins)} 개"]
+    rep = [f"guard 블록 {len(blocks)} 개 사용 {len(used_bins)} 개"]
     for k, b in enumerate(bins):
         items = " ".join(f"{o['name']}({o['size']})" for o in b["objs"]) or "(비어 있음)"
         rep.append(f"  guard @{b['ns'] + SEC_ALIAS:#010x} : {items}   {b['used']}/{BLOCK} B")
