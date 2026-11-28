@@ -339,8 +339,8 @@ int SECURE_dma_m2m_start(void *src_buf, void *dst_buf, uint32_t len)
  *  - len == 0 check: SUBS/ADDS sets C for len = 0 and dst != 0 -> BCS rejects. dst = 0, len = 0
  *    gives end = 0xFFFFFFFF; it is rejected by the NS-MPU RW bit (no unprivileged write).
  *  - CCR.EN = 0 before programming: s_busy == 0 implies EN == 0 (only this code sets EN, the
- *    ISR clears EN before s_busy, TEIF clears EN in hardware, GTZC abort leaves s_busy = 1).
- *  - IFCR = CGIF1 before enable: the ISR clears CGIF1 before s_busy = 0 on both TC and TE.
+ *    ISR clears EN before s_busy, TEIF clears EN in hardware, GTZC abort clears EN before s_busy).
+ *  - IFCR = CGIF1 before enable: the ISR clears CGIF1 before s_busy = 0 on TC and TE, GTZC_IRQHandler likewise on abort.
  *  - Lock and CPAR/CM0AR/CNDTR writes are moved BEFORE the checks: once the channel is owned
  *    and EN = 0 the registers are inert, so r0 and r2 become free and no value has to be
  *    recomputed (verify_inst recomputes nothing because len is dead there; here len is stored
@@ -639,14 +639,37 @@ void DMA1_Channel1_IRQHandler(void)
     ISR_TS(2);   /* Tb: right before bx lr (EXC_RETURN) */
 }
 
+/* 전송 시점 보호 (논문 §3.4) + 위반 뒤 복구 (llvm_dma_cluster D8).
+ * 원본은 채널만 끄고 끝나서 s_busy = 1, NS 태스크는 완료 통지를 영원히 기다렸다 [실측: 보드 4단계].
+ * 이제 DMA ISR 의 완료 경로와 같은 순서로 채널을 반납하고, NS 에 status 2 (guard 위반) 를 알린다.
+ *  - 순서: EN = 0 -> CGIF1 지움 -> s_busy = 0. mediator 의 "s_busy == 0 이면 EN == 0, CGIF1 == 0" 불변식 유지.
+ *  - GTZC 우선순위 0 > DMA ISR 5: 마지막 beat 에서 TC 도 섰다면 여기서 CGIF1 을 지우므로, 뒤이어 도는
+ *    DMA ISR 은 플래그 없음 분기로 빠진다 → 통지는 한 번만 [아키텍처 도출].
+ *  - 복구는 진입 시 CCR.EN == 1 (전송 중) 이고 s_busy == 1 일 때만 한다. SVC mediator 는 PRIMASK 를 쓰지 않으므로
+ *    s_busy = 1 과 EN = 1 사이에 다른 원인의 TZIC 가 끼어들 수 있다. 그때 EN == 0 이라 s_busy 를 건드리지 않아
+ *    mediator 의 채널 소유를 뺏지 않는다 [아키텍처 도출]. 그 밖의 TZIC 는 플래그만 지운다.
+ *  - 레지스터: DMA_CCRx.EN / DMA_IFCR.CGIFx — RM0438 DMA 장 레지스터 절 (절 번호 미확인),
+ *    TZIC_FCR3 bit4 (SRAM1) — CMSIS GTZC_TZIC_TypeDef, RM 절 번호 미확인. */
 void GTZC_IRQHandler(void)
 {
-    DMA_CH->CCR &= ~DMA_CCR_EN;
+    uint32_t ccr = DMA_CH->CCR;
+    DMA_CH->CCR = ccr & ~DMA_CCR_EN;
     __DSB();
 
     GTZC_TZIC_S->FCR3 = 0b10000U;
     __DSB();
 
+    if ((ccr & DMA_CCR_EN) && s_busy)
+    {
+        DMA1->IFCR = DMA_IFCR_CGIF1;
+        s_busy = 0;
+#if defined(DMA_NOTIFY_BLXNS)
+        if (s_ns_callback) s_ns_callback(2u);
+#else
+        *s_ns_status = 2u;                               /* 2 = guard 위반으로 중단 */
+        NVIC_SetPendingIRQ(SECURE_DMA_DOORBELL_IRQn);
+#endif
+    }
 }
 #endif /* !MEDIATOR_INSECURE */
 

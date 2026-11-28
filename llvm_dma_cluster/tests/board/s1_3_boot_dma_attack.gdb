@@ -13,7 +13,7 @@ c
 finish
 p g_dma_boot_status
 set $i = 4
-while $i < 7
+while $i < 6
   set *(unsigned*)0xE000ED98 = $i
   printf "rnr %d: RBAR=%08x RLAR=%08x\n", $i, *(unsigned*)0xE000ED9C, *(unsigned*)0xE000EDA0
   set $i = $i + 1
@@ -31,8 +31,6 @@ p s_privA.okCount
 p s_privB.okCount
 x/8bx &s_dmaDstA
 x/8bx &s_dmaDstB
-x/8bx &s_dmaShared
-x/8bx ((char*)&s_dmaShared)+32
 p/x s_privA.v.dmaStatus
 echo \n=== 3. attack\n
 p s_privA.attack

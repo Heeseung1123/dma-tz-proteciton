@@ -132,17 +132,45 @@
 | Secure SRAM | .data 24 / .bss 10448 | .data 32 (+8: g_dma_boot_status 등) / .bss 10448 |
 | S-MPU 태그 / MPCBB guard 블록 | 2 / 2 | 3 / 3 |
 
+## 공유 cluster 제거 + guard 위반 복구 (2026-11-28, 사용자 결정 D8/D9: "remove the shared cluster, insert the recovery code on GTZC_IRQHandler")
+- **D9 공유 cluster 제거** (D3 결정을 뒤집음). `app_freertos.c` 사본에서 `s_dmaShared` 와 두 태스크의 공유 전송을 뺐다.
+  pass 의 `dma:shared:` 지원은 그대로 (T3 too_many 가 계속 쓴다). `DMA_TEST_SHIFT` 는 `dma:vDmaTaskA` 로 바꿔 c0 을 키운다.
+  - 결과 [빌드]: cluster 2 개, c0 = Task A [0x20018000,0x20018100), c1 = Task B [0x20018200,0x20018300), guard 0x20018100 / 0x20018300.
+    두 cluster 모두 256 B 이므로 앞 칸 없음. DMA 태스크 NS-MPU configurable region 2/3 (globals + 전용 cluster).
+  - T6 은 기본 빌드(앞 칸 없음)와 annotate_ok 변형(c1 = 304 B → cap 320 B, 앞 칸 192 B = s_privA, s_privB)으로 나눠 확인.
+- **D8 GTZC_IRQHandler 복구** (`secure_nsc.c` 사본). 진입 시 CCR 을 읽어 EN = 0, SRAM1F 지움은 원본 그대로.
+  진입 시 EN == 1 이고 s_busy == 1 이면: CGIF1 지움 → s_busy = 0 → NS status word = 2 → doorbell pend.
+  - EN 조건 이유: SVC mediator 는 PRIMASK 를 쓰지 않으므로 `s_busy = 1` 과 `EN = 1` 사이에 다른 원인의 TZIC 가 끼면 채널 소유를 뺏게 된다 [아키텍처 도출].
+  - 남은 경합 [추정]: DMA ISR(우선순위 5) 가 TC 를 읽은 뒤 EN 을 끄기 전에 GTZC(0) 가 끼면 doorbell 이 두 번 pend 되고 status 가 0 으로 덮인다.
+    guard 접근이 마지막 beat 와 같은 경우뿐이고 보호(쓰기 무시·채널 중단)에는 영향 없음, 보고값만 틀린다. DMA ISR 은 측정 경로(ISR_TS)라 고치지 않았다.
+  - NS: `App_DmaM2M` 이 완료 status != 0 이면 -2 반환 (dmaStatus 1 = TEIF, 2 = guard 위반).
+  - mediator / Secure context 명령열은 그대로 (T5: baseline 과 동일 44 / 7 / 11).
+  - 보드: 아직 다시 확인하지 않음. 기대값은 BOARD_TEST.md 4단계 (dmaStatus = 2, s_busy = 0, okCount 계속 증가).
+- 메모리 (개정 이미지) [빌드 실측]:
+
+| 항목 | baseline (수동 배치) | 이전 (공유 cluster) | 개정 |
+|---|---|---|---|
+| guard | 512 B | 768 B | **512 B** |
+| 패딩 | 640 B | 48 B | 48 B (s_priv 32 B 정렬) |
+| 보호에 드는 NS SRAM | 1152 B | 816 B | **560 B** |
+| NS Flash 추가 | — | +272 B | **+264 B** (manifest 172 + zero table 16 + dma_zero_clusters 76) |
+| Secure .text | 11208 B | 12016 B (+808) | **12080 B (+872)** = +808 부팅 코드 + 64 GTZC 복구 |
+| S-MPU 태그 / guard 블록 | 2 / 2 | 3 / 3 | 2 / 2 |
+
+- Secure Flash +808 B 내역 (GCC -O0, `objdump -dl` 줄 단위): dma_boot_config 802 B = 엔트리 복사+범위 검사 272, MPCBB 이중 루프 142,
+  겹침 검사 134, S-MPU 루프 116, 헤더 검사 64, 프레임 50, guard_bind 호출 24. 같은 파일을 -O1 / -Os 로 빌드하면 456 / 408 B [실측: 오브젝트 크기].
+
 ## 시험 요약 (마지막 실행: 처음부터 `rm -rf build && build_all.sh && tests/run_tests.sh`, SVC 경로)
 - 1단계 플러그인: OK (LLVM 18.1.8). 2단계 NS: OK (1/2차 JSON 동일, check_layout OK). 3단계 Secure: OK (veneer 16 개 동일, check_pair 0).
 - 4단계 보드: **실행함** (2026-11-28, 위 "보드 확인"). 1·2·3·5·6 기대와 같음, 4 는 보호 동작 확인 + 기대와 다른 점 2 개 (중단 뒤 복구 없음, 읽기에서 TEIF 없음).
-- 5단계 + 개선 시험: `tests/run_tests.sh` PASS 20 / FAIL 0.
+- 5단계 + 개선 시험: `tests/run_tests.sh` PASS 21 / FAIL 0 (D8/D9 개정 후).
 - GCC baseline: `./build.sh` 그대로 (프로젝트 원본 파일 변경 없음. 작업 전부터 있던 `secure_context.c` 공백 수정 1 줄은 건드리지 않음).
 
 ## 결정이 필요한 항목 (사용자)
 - ~~D1 mediator 오버헤드~~, ~~D2 컨텍스트 전환 오버헤드~~ — SVC 경로 전환(#28–#33)으로 해소: mediator·Secure context 명령열이 baseline 과 동일.
-- ~~D3 NS-MPU region~~ — 사용자 결정 (2026-11-28): 공유 cluster 는 의도된 동작, 그대로 둔다 (DMA 태스크 configurable region 3/3 사용).
+- ~~D3 NS-MPU region~~ — 사용자 결정 (2026-11-28): 공유 cluster 는 의도된 동작 → 이후 D9 에서 공유 cluster 제거로 바뀜 (region 2/3).
 - ~~D4 보드~~ — 사용자 지시로 실행 (위 "보드 확인").
 - **D7 guard 읽기에서 TEIF 없음.** [실측] NS DMA 의 guard(Secure 블록) 읽기는 bus error 없이 0 을 읽고 TZIC SR3 만 선다. CLAUDE.md 확정 사실과 다름 → 어떤 조건에서 TEIF 를 봤는지 확인 필요.
-- **D8 guard 위반 뒤 복구.** GTZC_IRQHandler 가 채널만 끄므로 요청 태스크가 영구 대기, 채널 mutex 때문에 다른 DMA 태스크도 정지. 논문 범위(채널 중단)는 충족. 복구(예: s_busy 해제 + 실패 통지)를 넣을지 결정 필요 (원본 secure_nsc.c 변경 = 측정 경로 밖 ISR).
+- ~~D8 guard 위반 뒤 복구~~ — 사용자 결정 (2026-11-28): 복구 넣음 (위 "공유 cluster 제거 + guard 위반 복구"). 원래 내용: GTZC_IRQHandler 가 채널만 끄므로 요청 태스크가 영구 대기, 채널 mutex 때문에 다른 DMA 태스크도 정지. 논문 범위(채널 중단)는 충족. 복구(예: s_busy 해제 + 실패 통지)를 넣을지 결정 필요 (원본 secure_nsc.c 변경 = 측정 경로 밖 ISR).
 - **D5 커밋 규칙.** "~/dma-tz 안 파일 수정 금지" 지시에 따라 docs/CHANGES.md, docs/gap-analysis.md 에는 기록하지 않았다 (이 로그에만).
 - **D6 툴체인.** LLVM 18 은 sudo 없이 `~/opt/root18` 에 풀어 썼다. 정식 설치(apt.llvm.org 또는 `apt install llvm-18-dev lld-18`)를 원하면 env_llvm18.sh 가 자동으로 그쪽을 쓴다.

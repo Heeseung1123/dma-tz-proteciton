@@ -94,7 +94,7 @@ typedef struct
     TaskHandle_t          hTask;       /* doorbell ISR notifies this task */
     volatile uint8_t      dmaPending;  /* 1 while this task's transfer is in flight */
     volatile uint8_t      dmaDone;
-    volatile uint8_t      dmaStatus;   /* last result: 0 = TC, 1 = TEIF */
+    volatile uint8_t      dmaStatus;   /* last result: 0 = TC, 1 = TEIF, 2 = guard 위반 (GTZC) */
 } dma_task_globals_t;
 
 #define DMA_XFER_LEN        8u
@@ -114,12 +114,11 @@ static dma_task_priv_t s_privA, s_privB;
 /* DMA 목적지 버퍼: 평범한 static 전역. 배치는 pass + 생성 링커 스크립트가 정한다. */
 static uint8_t s_dmaDstA[256];        /* Task A 만 → .dma.t.vDmaTaskA */
 static uint8_t s_dmaDstB[256];        /* Task B 만 → .dma.t.vDmaTaskB */
-static uint8_t s_dmaShared[64];       /* A, B 둘 다 → 공유 cluster .dma.s.0 */
 
 /* ---- 빌드 시험용 변형 (tests/run_tests.sh 가 -D 로 켠다. 기본 빌드에는 없음) ---- */
 #if defined(DMA_TEST_SHIFT)        /* 음성: NS 배치만 바뀐 "stale" 이미지 → Secure 의 guard 결합 불일치 (-7).
-                                    * cluster 0 (공유 {A,B}, key = 소유자 목록) 을 키워 모든 guard 를 옮긴다. */
-static uint8_t s_testShift[256] __attribute__((used, annotate("dma:shared:vDmaTaskA,vDmaTaskB")));
+                                    * cluster 0 (Task A 전용) 을 키워 모든 guard 를 옮긴다. */
+static uint8_t s_testShift[256] __attribute__((used, annotate("dma:vDmaTaskA")));
 #endif
 #if defined(DMA_TEST_BAD_INIT)     /* 음성: 초기값 있는 annotate 버퍼 → NOLOAD cluster 에 둘 수 없음 */
 static uint8_t s_testBadInit[16] __attribute__((used, annotate("dma:vDmaTaskA"))) = { 1 };
@@ -127,7 +126,7 @@ static uint8_t s_testBadInit[16] __attribute__((used, annotate("dma:vDmaTaskA"))
 #if defined(DMA_TEST_BAD_TASK)     /* 음성: annotate 의 태스크 이름이 없음 */
 static uint8_t s_testBadTask[16] __attribute__((used, annotate("dma:vNoSuchTask")));
 #endif
-#if defined(DMA_TEST_TOO_MANY)     /* 음성: cluster 7 개 > S-MPU 태그 4 개 */
+#if defined(DMA_TEST_TOO_MANY)     /* 음성: cluster 6 개 > S-MPU 태그 4 개 */
 static uint8_t s_testMany1[8] __attribute__((used, annotate("dma:shared:m1")));
 static uint8_t s_testMany2[8] __attribute__((used, annotate("dma:shared:m2")));
 static uint8_t s_testMany3[8] __attribute__((used, annotate("dma:shared:m3")));
@@ -186,14 +185,19 @@ static inline int App_DmaStartSvc(void *src, void *dst, uint32_t len)
     return (int)r0;
 }
 
-/* One M2M transfer through the Secure mediator; returns after completion (0) or on reject (-1).
+/* One M2M transfer through the Secure mediator; returns after completion (0), on reject (-1),
+ * or when the transfer was aborted (-2: TEIF or guard violation).
  * Caller holds the DMA mutex. (DMA sink: config/dma_config.json 의 App_DmaM2M args [2]) */
 static int App_DmaM2M(dma_task_globals_t *g, void *src, void *dst, uint32_t len)
 {
     g->dmaDone    = 0u;
     g->dmaPending = 1u;          /* set before start: the ISR may run right after EN */
     int r = App_DmaStartSvc(src, dst, len);            /* SVC -> Handler mode NSC */
-    if (r == 0) { (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY); }
+    if (r == 0)
+    {
+        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (g->dmaStatus != 0u) { r = -2; }   /* 1 = TEIF, 2 = guard 위반 (Secure GTZC_IRQHandler 가 중단) */
+    }
     else        { g->dmaPending = 0u; }
     return r;
 }
@@ -238,10 +242,6 @@ static void vDmaTaskA( void *pvParameters )
   {
     xSemaphoreTake(p->v.dmaMutex, portMAX_DELAY);
     if (App_DmaM2M(&p->v, p->src, s_dmaDstA, DMA_XFER_LEN) == 0) { p->okCount++; }
-    if ((n & 3u) == 0u)
-    {
-      (void)App_DmaM2M(&p->v, p->src, s_dmaShared, DMA_XFER_LEN);
-    }
 #if defined(DMA_TEST_OVERRIDE)
     (void)App_DmaM2M(&p->v, p->src, s_testOvr, DMA_XFER_LEN);
 #endif
@@ -261,10 +261,6 @@ static void vDmaTaskB( void *pvParameters )
   {
     xSemaphoreTake(p->v.dmaMutex, portMAX_DELAY);
     if (App_DmaM2M(&p->v, p->src, s_dmaDstB, DMA_XFER_LEN) == 0) { p->okCount++; }
-    if ((n & 3u) == 2u)
-    {
-      (void)App_DmaM2M(&p->v, p->src, s_dmaShared + 32, DMA_XFER_LEN);
-    }
 #if defined(DMA_TEST_STACK_BUF)    /* 음성: 지역(스택) 배열을 DMA 목적지로 */
     {
       uint8_t local[8];
@@ -307,7 +303,7 @@ static const TaskParameters_t xDmaTaskAParams =
   .xRegions =
   {
     { &s_privA, sizeof( s_privA ), portMPU_REGION_READ_WRITE },   /* globals + src (cluster 밖) */
-    DMA_TASK_REGIONS_vDmaTaskA                                     /* 전용 cluster + 공유 cluster */
+    DMA_TASK_REGIONS_vDmaTaskA                                     /* 전용 cluster */
   }
 };
 

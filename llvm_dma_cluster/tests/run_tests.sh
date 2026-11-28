@@ -102,26 +102,37 @@ if [ -n "$SB" ]; then
 else echo "SKIP  GCC baseline Secure ELF 없음 (./build.sh 후 다시)"; fi
 
 echo "== T6 cluster 앞 빈 칸 채움 (DMA_FILL): 오른쪽 정렬 cluster + 앞 칸 NS 데이터"
-python3 - "$B/ns/ns.elf" <<'EOF2' && ok "fill: c0 = [0x200180c0,0x20018100), 앞 칸에 NS .bss (DMA 버퍼 아님), cluster 안은 DMA 버퍼만" || bad "fill: 배치 틀림"
+# 기본 빌드: cluster 2 개 모두 256 B → 앞 칸 없음. 앞 칸은 annotate_ok 변형 (c1 = 304 B → cap 320 B) 으로 본다.
+fill_check() {  # $1 ns.elf, $2 모드 (main | on | off)
+  python3 - "$1" "$2" <<'EOF2'
 import sys
 from elftools.elf.elffile import ELFFile
-e = ELFFile(open(sys.argv[1], "rb"))
+e = ELFFile(open(sys.argv[1], "rb")); mode = sys.argv[2]
 S = {s.name: (s["st_value"], s["st_size"]) for s in e.get_section_by_name(".symtab").iter_symbols() if s.name}
-ps, pe, cs, ce = (S[f"__dmac0_{k}"][0] for k in ("pre_start", "pre_end", "start", "end"))
-assert (cs, ce) == (0x200180c0, 0x20018100), (hex(cs), hex(ce))
-inpre = sorted(n for n, (v, z) in S.items() if z and ps <= v < cs and not n.startswith("__"))
-incl = sorted(n for n, (v, z) in S.items() if z and cs <= v < ce and not n.startswith("__"))
-print("      앞 칸:", inpre, " cluster:", incl)
-assert inpre and pe - ps > 0 and "s_dmaShared" not in inpre and incl == ["s_dmaShared"]
+DMA = {"s_dmaDstA", "s_dmaDstB", "s_testAnnB"}
+def cl(c): return tuple(S[f"__dmac{c}_{k}"][0] for k in ("pre_start", "pre_end", "start", "end"))
+def objs(lo, hi): return sorted(n for n, (v, z) in S.items() if z and lo <= v < hi and not n.startswith("__"))
+for c in (0, 1):
+    ps, pe, cs, ce = cl(c)
+    assert set(objs(cs, ce)) <= DMA and objs(cs, ce), (c, objs(cs, ce))
+    assert not (set(objs(ps, cs)) & DMA), (c, objs(ps, cs))
+assert cl(0) == (0x20018000, 0x20018000, 0x20018000, 0x20018100), [hex(x) for x in cl(0)]
+ps, pe, cs, ce = cl(1)
+if mode == "main":
+    assert (ps, pe, cs, ce) == (0x20018200, 0x20018200, 0x20018200, 0x20018300), [hex(x) for x in cl(1)]
+else:
+    assert (ps, cs, ce) == (0x20018200, 0x200182c0, 0x20018400), [hex(x) for x in cl(1)]
+    if mode == "on": assert objs(ps, cs) and pe > ps, objs(ps, cs)
+    else:            assert pe == ps and not objs(ps, cs), objs(ps, cs)
+    print("      c1 앞 칸:", objs(ps, cs), " cluster:", objs(cs, ce))
 EOF2
-if DMA_FILL=off ns_build fill_off ""; then
-  python3 - "$B/t_fill_off/ns/ns.elf" <<'EOF2' && ok "fill off: 앞 칸 비움, cluster 위치 동일" || bad "fill off: 배치 틀림"
-import sys
-from elftools.elf.elffile import ELFFile
-e = ELFFile(open(sys.argv[1], "rb"))
-S = {s.name: s["st_value"] for s in e.get_section_by_name(".symtab").iter_symbols() if s.name}
-assert S["__dmac0_pre_end"] == S["__dmac0_pre_start"] == 0x20018000 and S["__dmac0_start"] == 0x200180c0
-EOF2
+}
+fill_check "$B/ns/ns.elf" main && ok "fill main: c0/c1 = 256 B, 앞 칸 없음, cluster 안은 DMA 버퍼만" || bad "fill main: 배치 틀림"
+if [ -f "$B/t_annotate_ok/ns/ns.elf" ]; then
+  fill_check "$B/t_annotate_ok/ns/ns.elf" on && ok "fill on: c1 = [0x200182c0,0x20018400), 앞 칸 192 B 에 NS .bss (DMA 버퍼 아님)" || bad "fill on: 배치 틀림"
+else bad "fill on: annotate_ok 빌드 없음"; fi
+if DMA_FILL=off ns_build fill_off "-DDMA_TEST_ANNOTATE_OK"; then
+  fill_check "$B/t_fill_off/ns/ns.elf" off && ok "fill off: 앞 칸 비움, cluster 위치 동일" || bad "fill off: 배치 틀림"
 else bad "fill off: 빌드 실패 (build/t_fill_off/ns.log)"; fi
 
 echo "== 결과: PASS $PASS / FAIL $FAILN"
