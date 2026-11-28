@@ -255,7 +255,7 @@ secureportNON_SECURE_CALLABLE void SecureContext_Init( void )
                      * context switch. */
                     pulCurrentStackPointer = ( uint32_t * ) xSecureContexts[ ulSecureContextIndex ].pucStackStart;
                     pulCurrentStackPointer--;
-/* 
+		    /* 
                     if( ulIsTaskPrivileged )
                     {
                         *( pulCurrentStackPointer ) = securecontextCONTROL_VALUE_PRIVILEGED;
