@@ -96,8 +96,7 @@
 
 ## 결정이 필요한 항목 (사용자)
 - ~~D1 mediator 오버헤드~~, ~~D2 컨텍스트 전환 오버헤드~~ — SVC 경로 전환(#28–#33)으로 해소: mediator·Secure context 명령열이 baseline 과 동일.
-- **D3 NS-MPU region.** 공유 cluster 때문에 DMA 태스크가 configurable region 3/3 을 쓴다 (baseline 2/3). CLAUDE.md 의 "NS-MPU 영역 추가 사용 금지" 와 충돌.
-  공유 버퍼를 빼면 2/3 으로 돌아간다.
+- ~~D3 NS-MPU region~~ — 사용자 결정 (2026-11-28): 공유 cluster 는 의도된 동작, 그대로 둔다 (DMA 태스크 configurable region 3/3 사용).
 - **D4 보드.** STLINK-V3 가 연결되어 있지만 CLAUDE.md 는 보드 실행을 사용자 몫으로 정하고 있고, 이 이미지들은 한 번도 실행된 적이 없어 올리지 않았다.
   BOARD_TEST.md 절차로 직접 확인하거나, 올려도 된다고 하면 그 절차대로 진행한다.
 - **D5 커밋 규칙.** "~/dma-tz 안 파일 수정 금지" 지시에 따라 docs/CHANGES.md, docs/gap-analysis.md 에는 기록하지 않았다 (이 로그에만).
