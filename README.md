@@ -5,6 +5,7 @@
 - 논문: [`docs/paper/paper.pdf`](docs/paper/paper.pdf), [`docs/paper/paper.txt`](docs/paper/paper.txt)
 - 측정 보고서: [`results/report.md`](results/report.md)
 - 대상: STM32L562E-DK (Cortex-M33, 110MHz). Secure는 베어메탈, NonSecure는 FreeRTOS V11.3.1 (MPU wrappers v2)
+- **채널이 멈추기까지 guard 에 닿은 양 [실측]:** 쓰기 **4 B** (MPCBB 가 무시), 읽기 **10 B** (모두 0 으로 읽힘). 256 B guard 안에서 멈추고 guard 너머는 무변조. 읽기·쓰기 모두 TZIC 로 멈추며 TEIF 는 없음. 조건: `llvm_dma_cluster/` 하네스, 8-bit beat, 무부하. 자세히는 [아래](#전송-시점-보호-채널이-멈추기까지-guard-에-닿은-양-보드-실측)
 
 ![제안 기법의 메모리·보호 수단 배치와 검증·탐지 흐름](docs/paper/figures/fig2_design_overview.png)
 
