@@ -94,16 +94,55 @@
 | 34 | `gen_layout.py`: cluster 용량을 256 B → **32 B 단위**로, cluster 를 guard 쪽에 붙임(끝 = 256 B 경계 유지). 블록 안 cluster 앞 칸(`__dmac<i>_pre_start..start`)에 1차 링크 map 의 `.bss.<이름>` 객체를 FFD 로 배치 (`--fill-map`, 크기/정렬 우선 두 순서 중 나은 쪽), 2차 링크 `ASSERT` 로 크기 일치 확인, 앞 칸도 zero table 에 포함. `build_ns.sh`: `DMA_FILL=on|off`, `DMA_FILL_EXCLUDE` | c0 = [0x200180c0, 0x20018100) 64 B, 앞 칸 192/192 B = `s_privA`, `s_privB`. c1/c2 는 256 B 그대로(앞 칸 0). S-MPU RNR4 RBAR 0x200180c3, NS-MPU region {0x200180c0, 0x40} |
 | 35 | 안전성 근거: 앞 칸은 S-MPU 태그 밖 → mediator TTT 거부 [아키텍처 도출]. owner 의 DMA NS-MPU region 은 cluster 만 덮음. DMA 주소 증가 방향이라 cluster 넘침은 guard 에 먼저 닿음 [논문 §3]. 공격 시험 attack[2] (A 자신의 globals = 이제 c0 바로 앞 s_privA) 가 −1 이어야 함 (보드 확인 항목) | T6: on/off 두 빌드 배치 검사 PASS |
 
+## 보드 확인 (2026-11-28, STM32L562E-DK + STLINK-V3, 사용자 지시로 실행) — 스크립트: tests/board/
+이미지: build/secure/secure.elf + build/ns/ns.elf (SVC 경로, DMA_FILL=on). 값은 모두 [실측].
+
+| 단계 | 결과 | 판정 |
+|---|---|---|
+| 1 부팅 | `dma_boot_config()` = 0, `g_dma_boot_status` = 0. RNR4/5/6 = 200180c3/200180e1, 20018203/200182e1, 20018403/200184e1. MPCBB1 VCTR[12] = 0x2a | 기대와 같음 |
+| 2 정상 DMA (60 s) | okCount A 122 (2.03/s), B 87 (1.45/s). dstA 00..07, dstB 80..87, shared 00..07 / +32 80..87, dmaStatus 0 | 같음 |
+| 3 요청 시점 공격 | `attack = {0,-1,-1,-1,-1,-1}` ([2] = c0 앞 칸의 s_privA → 앞 칸이 DMA 대상 아님도 확인). SFSR 0, CFSR 0 | 같음 |
+| 5 SVC 경로 | mediator 첫 명령에서 IPSR 0xb, MSP_S 0x30017f58 사용, PSP_S = 0 (DMA 태스크 Secure context 없음), 호출자 SVC_Handler. 실행 뒤 SFSR/CFSR 0 | 같음 |
+| 4 쓰기 guard | CCR.EN 직전 CNDTR1 8→528, CPAR1 = NS flash 0x08040000. 결과: 260 B 전송 (CNDTR 잔여 268 = c1 256 B + guard 4 B), GTZC_IRQHandler 가 EN=0, SR3 지움. guard 너머 0x20018400 무변조, Secure 에서 본 guard 0 그대로 | 보호는 기대와 같음 |
+| 4 쓰기 guard (이후) | **okCount A 7, B 6 에서 정지**. GTZC_IRQHandler 는 채널만 끄고 NS 통지·`s_busy` 해제가 없어 Task A 가 `ulTaskNotifyTake(portMAX_DELAY)` 에서 영구 대기(mutex 보유) → B 도 정지 | **BOARD_TEST 의 "계속 증가" 는 틀린 [추정]이었음.** 원본 secure_nsc.c 동작 |
+| 4 읽기 guard | CPAR1 = guard 0x20018300, CNDTR1 16. 2 회 반복 동일: 8 B 전송(목적지에 0 기록 = RAZ), GTZC_IRQHandler 가 EN=0 (CNDTR 8), DMA ISR = 0x5 (GIF, HTIF) **TEIF 없음**, Task A 영구 대기. ISR 정지점을 둔 실행에서는 전송이 끝까지(16 B, TCIF) 간 뒤 GTZC → TC 경로로 복구됨 | Secure 데이터 유출 없음(RAZ), 채널 중단은 TZIC 로. **CLAUDE.md "Secure 블록 DMA 읽기 → bus error → TEIF" 와 다름 → 질문** |
+| 6 stale | t_bind Secure + t_stale NS: Error_Handler 에서 정지, `g_dma_boot_status` = −7. 짝이 맞는 t_bind NS: 0, NonSecure_Init 도달 | 같음 |
+
+### 사이클 (7단계) — GDB 정지점 2 개(svc, 다음 명령) 사이 DWT CYCCNT, warm-up 4 회 뒤 12 회
+| 이미지 | 요청 1 회 (svc → 복귀) | 비고 |
+|---|---|---|
+| 이 빌드 (clang LTO -O2 NS, GCC -O0 Secure) | **428** (12/12 동일) | |
+| baseline GCC (`./build.sh`, NS -O1, Secure -O0) | **543** (12/12 동일, 두 호출 지점 같음) | |
+- 경로의 명령열은 Secure mediator·NS SVC_Handler 모두 같다 (T5). 다른 것은 NS → NSC 분기(GCC veneer 1 명령 vs lld thunk 3 명령)뿐인데 이 빌드가 115 cycle 적다.
+- 구간 분해(정지점 추가, 절대값은 정지 때문에 커짐): 차이 전부가 `svc` → `SVC_Handler` 첫 명령(예외 진입) 구간 (236 vs 351). FPCA = 0 (두 이미지), ICACHE 는 두 이미지 모두 꺼져 있음(ICACHE_CR EN = 0, hit/miss 0). 원인 미확인 [추정: 예외 진입 중 벡터/스택 접근 또는 정지 재개 방식의 차이].
+- 정지점 방식이라 논문 표 2 (코드 안 DWT, 32 회) 값과 직접 비교하지 않는다. 정밀 비교는 baseline 의 BENCH_PHASE 방식(코드 안 DWT)을 이 빌드에 옮겨야 한다.
+
+### 메모리 오버헤드 (기존 수동 배치 `s_dmaTaskMem` 대비, ELF 심볼/섹션 크기) [실측]
+| 항목 | baseline (수동 배치) | 이 빌드 (LLVM 자동 배치) |
+|---|---|---|
+| DMA 영역 | `s_dmaTaskMem[2]` 1536 B = 태스크마다 globals 256 + cluster 256 + guard 256 | `.dma_c0..2` 1536 B = c0 (앞 칸 192 + cluster 64 + guard 256), c1/c2 (cluster 256 + guard 256) |
+| guard | 512 B (2 개) | 768 B (3 개: 공유 cluster 1 개 추가) |
+| globals 패딩 (cluster 를 256 경계에 맞추려는 것) | 2 × 244 B = 488 B (globals 12 B 를 256 B 로) | 0 (globals 는 일반 .bss, 32 B 정렬 s_priv 2 × 24 B = 48 B) |
+| 배열 정렬 패딩 (aligned(256)) | 152 B (s_dmaSrcA 끝 → s_dmaTaskMem) | 0 (cluster 가 NS SRAM 시작 0x20018000) |
+| cluster 올림 낭비 | 0 | 0 (공유 64 B → 64 B, 앞 칸 192 B 는 s_privA/B 로 채움) |
+| **보호 때문에 쓰는 SRAM 합계** | **1152 B** (guard 512 + 패딩 640) | **816 B** (guard 768 + 정렬 48). 공유 cluster 를 빼고 같은 2 cluster 로 보면 560 B |
+| NS SRAM 전체 (.data + .bss + .dma_*) | 21312 B | 21112 B (−200 B, NS 컴파일러가 달라 참고값) |
+| NS Flash 추가분 | — | manifest 172 + zero table 24 + `dma_zero_clusters` 76 = **+272 B** (NS 전체 Flash 34120 → 38776 B 는 GCC -O1 vs clang -O2 LTO 차이가 섞여 비교 불가) |
+| Secure Flash (둘 다 GCC -O0) | .text 11208 B | 12016 B (**+808 B**: dma_boot_config 804 + prvSetTag 64 + prvMaxTags 44 + guard_bind_init 88 − SMPU_SetupTaskRegions/OneTaskRegion 212 + main 20) |
+| Secure SRAM | .data 24 / .bss 10448 | .data 32 (+8: g_dma_boot_status 등) / .bss 10448 |
+| S-MPU 태그 / MPCBB guard 블록 | 2 / 2 | 3 / 3 |
+
 ## 시험 요약 (마지막 실행: 처음부터 `rm -rf build && build_all.sh && tests/run_tests.sh`, SVC 경로)
 - 1단계 플러그인: OK (LLVM 18.1.8). 2단계 NS: OK (1/2차 JSON 동일, check_layout OK). 3단계 Secure: OK (veneer 16 개 동일, check_pair 0).
-- 4단계 보드: **실행 안 함** (D4). 절차·기대값: BOARD_TEST.md (SVC 경로 주소로 갱신).
+- 4단계 보드: **실행함** (2026-11-28, 위 "보드 확인"). 1·2·3·5·6 기대와 같음, 4 는 보호 동작 확인 + 기대와 다른 점 2 개 (중단 뒤 복구 없음, 읽기에서 TEIF 없음).
 - 5단계 + 개선 시험: `tests/run_tests.sh` PASS 20 / FAIL 0.
 - GCC baseline: `./build.sh` 그대로 (프로젝트 원본 파일 변경 없음. 작업 전부터 있던 `secure_context.c` 공백 수정 1 줄은 건드리지 않음).
 
 ## 결정이 필요한 항목 (사용자)
 - ~~D1 mediator 오버헤드~~, ~~D2 컨텍스트 전환 오버헤드~~ — SVC 경로 전환(#28–#33)으로 해소: mediator·Secure context 명령열이 baseline 과 동일.
 - ~~D3 NS-MPU region~~ — 사용자 결정 (2026-11-28): 공유 cluster 는 의도된 동작, 그대로 둔다 (DMA 태스크 configurable region 3/3 사용).
-- **D4 보드.** STLINK-V3 가 연결되어 있지만 CLAUDE.md 는 보드 실행을 사용자 몫으로 정하고 있고, 이 이미지들은 한 번도 실행된 적이 없어 올리지 않았다.
-  BOARD_TEST.md 절차로 직접 확인하거나, 올려도 된다고 하면 그 절차대로 진행한다.
+- ~~D4 보드~~ — 사용자 지시로 실행 (위 "보드 확인").
+- **D7 guard 읽기에서 TEIF 없음.** [실측] NS DMA 의 guard(Secure 블록) 읽기는 bus error 없이 0 을 읽고 TZIC SR3 만 선다. CLAUDE.md 확정 사실과 다름 → 어떤 조건에서 TEIF 를 봤는지 확인 필요.
+- **D8 guard 위반 뒤 복구.** GTZC_IRQHandler 가 채널만 끄므로 요청 태스크가 영구 대기, 채널 mutex 때문에 다른 DMA 태스크도 정지. 논문 범위(채널 중단)는 충족. 복구(예: s_busy 해제 + 실패 통지)를 넣을지 결정 필요 (원본 secure_nsc.c 변경 = 측정 경로 밖 ISR).
 - **D5 커밋 규칙.** "~/dma-tz 안 파일 수정 금지" 지시에 따라 docs/CHANGES.md, docs/gap-analysis.md 에는 기록하지 않았다 (이 로그에만).
 - **D6 툴체인.** LLVM 18 은 sudo 없이 `~/opt/root18` 에 풀어 썼다. 정식 설치(apt.llvm.org 또는 `apt install llvm-18-dev lld-18`)를 원하면 env_llvm18.sh 가 자동으로 그쪽을 쓴다.

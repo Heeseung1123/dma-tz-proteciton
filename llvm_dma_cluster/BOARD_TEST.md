@@ -1,4 +1,4 @@
-# 보드 확인 절차 (4단계) — 아직 보드에서 실행하지 않았음
+# 보드 확인 절차 (4단계) — 2026-11-28 실행, 결과: VERIFY_LOG.md "보드 확인", 스크립트: tests/board/
 
 대상 이미지: `build/secure/secure.elf` + `build/ns/ns.elf` (`scripts/build_all.sh` 산출물).
 Mediator 는 프로젝트와 같은 SVC 경로다: 태스크 `svc #110` → NS `SVC_Handler` fast path (`dma_m2m_start_svc`
@@ -69,10 +69,13 @@ c   (몇 초) → Ctrl-C
 p/x *(unsigned*)0x50032818     # TZIC SR3: bit4 SRAM1F (GTZC_IRQHandler 가 지우기 전이면 1)
 x/4wx 0x20018400               # (후) 위와 같아야 함 = guard 너머 무변조
 x/4wx 0x30018300               # Secure 에서 본 guard: NS DMA 쓰기 무시 → 이전 값 그대로
-p s_privA.okCount              # 계속 증가 (채널이 중단·복구되고 다음 요청이 처리됨)
+p s_privA.okCount              # [실측 2026-11-28] 정지: GTZC_IRQHandler 는 채널만 끄고 NS 통지/s_busy 해제가 없어 Task A 영구 대기
 ```
-읽기 방향: 같은 정지점에서 `set *(unsigned*)0x50020010 = 0x20018300` (CPAR1 = guard) → TEIF →
-`p/x s_privA.v.dmaStatus` = 1.
+주의: s_privA(DMA source)가 c0 앞 칸에 있으므로 길이만 늘리면 source 읽기가 c0 guard 에 먼저 닿는다. 쓰기 방향을 보려면
+같은 정지점에서 `set *(unsigned*)0x50020010 = 0x08040000` (CPAR1 = NS flash) 도 한다.
+읽기 방향: 같은 정지점에서 `set *(unsigned*)0x50020010 = 0x20018300` (CPAR1 = guard), CNDTR1 = 16.
+[실측 2026-11-28] TEIF 는 나지 않는다: 0 을 읽어(RAZ) 8 B 전송 뒤 GTZC_IRQHandler 가 EN=0, DMA ISR = 0x5 (GIF/HTIF), Task A 영구 대기.
+(CLAUDE.md 의 "읽기 → TEIF" 와 다름, VERIFY_LOG D7)
 
 ## 5. SVC 경로 확인 (Secure context 없는 DMA 태스크)
 ```gdb
