@@ -185,9 +185,15 @@ Task A 는 globals 를 c0 앞에 붙여 NS-MPU region 2 개로 하되, 붙는 �
   (수동 배치 1152 B). NS Flash +264 B, Secure .text 12080 B (D8/D9 와 같음: Secure 코드 변경 없음).
 - 시험: pass 단위 19 항목 (struct head 상수/가변 인덱스, shared_host 추가), T6 을 새 배치(main / annotate_ok / fill off)로. 보드: 미확인.
 
+## 보드 확인 2 (2026-11-28, D8/D10 이미지) [실측] — 상세: resultMemoryAuto.md §1
+- 1·2·3·5·6 기대와 같음. attack = {0,-1,-1,-1,-1,-1,0,-1} ([2] struct 안 globals 를 TTT 가 거부).
+- 4 쓰기 guard A / 4 읽기 guard A / 4c 공유 버퍼 guard B: 모두 guard 에서 멈추고 너머 무변조. GTZC_IRQHandler 복구로 s_busy 0, 변조한 요청은 −2, 두 태스크 계속 실행 (D8 해결 확인).
+- 읽기 guard 에서 TEIF 없음 (ISR 0) 은 이번에도 같음 (D7 열림).
+- 메모리 오버헤드: NS SRAM 635 B (수동 배치 1152 B), NS Flash +264 B, Secure Flash +808 B (resultMemoryAuto.md §2–3).
+
 ## 시험 요약 (마지막 실행: 처음부터 `rm -rf build && build_all.sh && tests/run_tests.sh`, SVC 경로)
 - 1단계 플러그인: OK (LLVM 18.1.8). 2단계 NS: OK (1/2차 JSON 동일, check_layout OK). 3단계 Secure: OK (veneer 16 개 동일, check_pair 0).
-- 4단계 보드: **실행함** (2026-11-28, 위 "보드 확인"). 1·2·3·5·6 기대와 같음, 4 는 보호 동작 확인 + 기대와 다른 점 2 개 (중단 뒤 복구 없음, 읽기에서 TEIF 없음).
+- 4단계 보드: **실행함** (2026-11-28 두 번: 위 "보드 확인", "보드 확인 2"). 1·2·3·5·6 기대와 같음, 4 는 보호 동작 확인 + 기대와 다른 점 2 개 (중단 뒤 복구 없음, 읽기에서 TEIF 없음).
 - 5단계 + 개선 시험: `tests/run_tests.sh` PASS 21 / FAIL 0 (D10 개정 후, pass 단위 19 항목).
 - GCC baseline: `./build.sh` 그대로 (프로젝트 원본 파일 변경 없음. 작업 전부터 있던 `secure_context.c` 공백 수정 1 줄은 건드리지 않음).
 

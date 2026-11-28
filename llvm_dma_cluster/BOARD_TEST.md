@@ -1,7 +1,7 @@
 # 보드 확인 절차 (4단계) — 1차 실행 2026-11-28 (공유 cluster 별도 guard 이미지), 결과: VERIFY_LOG.md "보드 확인", 스크립트: tests/board/
 
 **2026-11-28 개정 (D8, D9, D10): GTZC_IRQHandler 복구 + Task A struct(globals+dst) + Task B cluster 끝 공유 버퍼.**
-아래 주소·기대값은 개정 이미지 기준이며 보드에서 아직 다시 확인하지 않았다.
+아래 주소·기대값은 개정 이미지 기준이다. 2026-11-28 보드에서 모두 확인함 (결과: resultMemoryAuto.md §1).
 
 대상 이미지: `build/secure/secure.elf` + `build/ns/ns.elf` (`scripts/build_all.sh` 산출물).
 Mediator 는 프로젝트와 같은 SVC 경로다: 태스크 `svc #110` → NS `SVC_Handler` fast path (`dma_m2m_start_svc`

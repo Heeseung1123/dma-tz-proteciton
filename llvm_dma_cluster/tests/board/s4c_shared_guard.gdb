@@ -29,4 +29,5 @@ p/x s_taskA.priv.v
 p/x s_privB.v
 p s_taskA.priv.okCount
 p s_privB.okCount
+p s_taskA.priv.attack
 detach
